@@ -1,0 +1,35 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readdir, copyFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { Store, hashPassword, token } from '../lib/store.mjs';
+
+const exec = promisify(execFile);
+test('online backup restores users, tasks and history into a clean database', { timeout: 20000 }, async t => {
+  const folder = await mkdtemp(join(tmpdir(), 'taskmanager-backup-'));
+  const dbPath = join(folder, 'source.sqlite');
+  const backups = join(folder, 'backups');
+  const store = new Store(dbPath);
+  let restored;
+  t.after(async () => { restored?.close(); store.close(); await rm(folder, { recursive: true, force: true }); });
+  const password = await hashPassword(token());
+  const creator = store.addUser({ username: 'creator', name: 'Creator', password, admin: true }, true);
+  const reviewer = store.addUser({ username: 'reviewer', name: 'Reviewer', password });
+  let task = store.createTask(creator, { title: 'Backup task', description: 'A durable result', assignee_id: creator.id, reviewer_id: reviewer.id, due_date: null });
+  task = store.transition(task.id, creator, { action: 'start', note: 'Work started', version: 1 });
+  const result = await exec(process.execPath, [fileURLToPath(new URL('../scripts/backup.mjs', import.meta.url))], { env: { ...process.env, DB_PATH: dbPath, BACKUP_DIR: backups }, timeout: 10000 });
+  assert.match(result.stdout, /Verified backup:/);
+  const files = await readdir(backups);
+  assert.equal(files.length, 1);
+  const restoredPath = join(folder, 'restored.sqlite');
+  await copyFile(join(backups, files[0]), restoredPath);
+  restored = new Store(restoredPath);
+  const detail = restored.detail(task.id, creator);
+  assert.equal(detail.events.length, 2); assert.equal(detail.status, 'in_progress');
+  assert.equal(restored.user(creator.id).username, 'creator');
+  assert.equal(Object.values(restored.db.prepare('PRAGMA integrity_check').get())[0], 'ok');
+});

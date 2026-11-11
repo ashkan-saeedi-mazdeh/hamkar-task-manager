@@ -1,0 +1,40 @@
+services:
+  taskmanager:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      APP_ORIGIN: https://${TASK_DOMAIN:?Set TASK_DOMAIN in .env}
+    volumes:
+      - tasks:/app/data
+      - backups:/app/backups
+    networks:
+      - app
+    init: true
+    stop_grace_period: 20s
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    profiles: [https]
+    environment:
+      TASK_DOMAIN: ${TASK_DOMAIN:?Set TASK_DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - app
+    depends_on:
+      - taskmanager
+volumes:
+  tasks:
+  backups:
+  caddy_data:
+  caddy_config:
+networks:
+  app:
