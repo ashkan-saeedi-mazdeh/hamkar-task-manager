@@ -62,6 +62,14 @@ the selected backup into an empty data directory as `taskmanager.sqlite`. Use th
 `node` user ownership (UID/GID 1000) for restored files. Do not retain old WAL/SHM files. Restart
 and verify sign-in, a task and its history before admitting normal traffic.
 
+Current backups exclude login sessions. If you restore an older backup that included sessions,
+clear them from the restored database while the app is stopped. Pass the restored file path as
+the final argument. This affects only the database you specify.
+
+```sh
+node --input-type=module -e "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(process.argv[1]); db.exec('DELETE FROM sessions'); db.close();" data/taskmanager.sqlite
+```
+
 ## Update and troubleshoot
 
 Take and export a backup before updating the source. Then run:
@@ -74,8 +82,8 @@ docker compose --profile https up -d --build
 refuses an origin without HTTPS. The proxy preserves the incoming Host for the origin check;
 see [Caddy reverse proxy headers](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers).
 
-If setup is refused in the browser, use the interactive container setup command on the server.
-Browser setup accepts loopback connections only; a container proxy is a remote connection.
+Use the interactive setup command on the server when `APP_ORIGIN` is set or in production.
+Browser setup is available only with the default loopback configuration.
 If login is throttled, wait 15 minutes. The per-address limit is shared behind a proxy.
 If the database cannot be opened, check the volume permissions and free disk space.
 

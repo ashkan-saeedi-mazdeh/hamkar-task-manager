@@ -30,8 +30,8 @@ function username(value) {
 }
 function version(value) { requireThat(Number.isSafeInteger(value) && value > 0, 400, 'نسخه رکورد نامعتبر است.'); return value; }
 function taskInput(body) {
-  const due = body.due_date || null;
-  if (due) requireThat(typeof due === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(due) && Number.isFinite(Date.parse(due)) && new Date(due).toISOString().slice(0, 10) === due, 400, 'مهلت انجام نامعتبر است.');
+  const due = body.due_date === '' ? null : (body.due_date ?? null);
+  if (due !== null) requireThat(typeof due === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(due) && Number.isFinite(Date.parse(due)) && new Date(due).toISOString().slice(0, 10) === due, 400, 'مهلت انجام نامعتبر است.');
   return { title: field(body.title, 'عنوان', 200), description: field(body.description, 'توضیح کار', 10000),
     assignee_id: field(body.assignee_id, 'انجام‌دهنده', 64), reviewer_id: field(body.reviewer_id, 'مدیر پیگیری', 64), due_date: due };
 }
@@ -61,6 +61,8 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
   const cookieName = secure ? '__Host-taskmanager' : 'taskmanager';
   const cookie = (raw, expired = false) => `${cookieName}=${raw}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${expired ? 0 : 43200}${secure ? '; Secure' : ''}`;
   const allowedOrigin = req => origin || `http://${req.headers.host}`;
+  // A local reverse proxy can also appear to connect from loopback.
+  const canSetup = req => !production && !origin && loopback(req.socket.remoteAddress);
   function rateLimit(req, name) {
     const current = Date.now();
     for (const [key, value] of attempts) if (value.until <= current) attempts.delete(key);
@@ -105,14 +107,17 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
       const body = mutating ? await bodyOf(req) : null;
       const raw = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
       const user = store.session(raw);
-      if (path === '/api/session' && method === 'GET') return json(200, { user: publicUser(user), csrf: user?.csrf, setupRequired: store.needsSetup(), canSetup: loopback(req.socket.remoteAddress) });
+      if (path === '/api/session' && method === 'GET') return json(200, { user: publicUser(user), csrf: user?.csrf, setupRequired: store.needsSetup(), canSetup: canSetup(req) });
       if (['/api/setup', '/api/login'].includes(path) && method === 'POST') {
+        const setup = path === '/api/setup';
+        if (setup) {
+          requireThat(canSetup(req), 403, 'برای راه‌اندازی اولیه از دستور راه‌اندازی روی سرور استفاده کنید.');
+          requireThat(store.needsSetup(), 409, 'راه‌اندازی اولیه قبلا انجام شده است.');
+        }
         const login = username(body.username);
         rateLimit(req, login);
         let account;
-        if (path === '/api/setup') {
-          requireThat(loopback(req.socket.remoteAddress), 403, 'راه‌اندازی اولیه را از خود سرور انجام دهید.');
-          requireThat(store.needsSetup(), 409, 'راه‌اندازی اولیه قبلا انجام شده است.');
+        if (setup) {
           account = store.addUser({ username: login, name: field(body.name, 'نام', 100), password: await hashPassword(password(body.password)), admin: true }, true);
         } else {
           const candidate = store.userByName(login);
@@ -136,7 +141,9 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
         const oldHash = user.password;
         requireThat(await verifyPassword(loginPassword(body.current_password), oldHash), 400, 'رمز فعلی نادرست است.');
         const hashed = await hashPassword(password(body.password));
-        requireThat(store.user(user.id)?.password === oldHash && store.user(user.id)?.active, 409, 'حساب تغییر کرده است. دوباره وارد شوید.');
+        const current = store.session(raw);
+        requireThat(current?.id === user.id, 401, 'نشست پایان یافته است. دوباره وارد شوید.');
+        requireThat(current.password === oldHash, 409, 'حساب تغییر کرده است. دوباره وارد شوید.');
         store.setPassword(user.id, hashed);
         res.setHeader('Set-Cookie', cookie('', true)); return json(200, { ok: true });
       }

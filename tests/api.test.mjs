@@ -4,8 +4,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { createApp } from '../server.mjs';
+import { hashPassword } from '../lib/store.mjs';
 import { request as httpRequest } from 'node:http';
 
 const newPassword = () => randomBytes(24).toString('base64url');
@@ -14,7 +15,11 @@ function request(url, options = {}) {
     const req = httpRequest(url, { method: options.method, headers: options.headers, timeout: 10000 }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
-      response.on('end', () => resolve({ status: response.statusCode, headers: new Headers(response.headers), json: async () => JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+      response.on('error', reject);
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({ status: response.statusCode, headers: new Headers(response.headers), text, json: async () => JSON.parse(text) });
+      });
     });
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('Request timed out')));
@@ -146,7 +151,7 @@ test('edits record old and new assignments; review and completed tasks remain fr
 test('task fields, distinct active participants, dates and lengths are validated', async t => {
   const f = await fixture(t);
   const input = { title: 'Task', description: 'Description', assignee_id: f.worker.user.id, reviewer_id: f.reviewer.user.id };
-  for (const extra of [{ title: '' }, { description: ' ' }, { assignee_id: f.reviewer.user.id }, { reviewer_id: 'missing' }, { due_date: '2026-02-30' }, { due_date: '2026-99-01' }, { due_date: 'invalid' }, { title: 'x'.repeat(201) }]) {
+  for (const extra of [{ title: '' }, { description: ' ' }, { assignee_id: f.reviewer.user.id }, { reviewer_id: 'missing' }, { due_date: '2026-02-30' }, { due_date: '2026-99-01' }, { due_date: 'invalid' }, { due_date: 0 }, { due_date: false }, { title: 'x'.repeat(201) }]) {
     assert.equal((await f.admin.request('/tasks', 'POST', { ...input, ...extra })).status, 400);
   }
   assert.equal((await f.admin.request('/tasks')).value.tasks.length, 0);
@@ -230,14 +235,277 @@ test('login throttling stops repeated guesses without exposing account existence
   assert.equal((await anonymous.request('/login', 'POST', { username: 'absent', password: 'incorrect' })).status, 429);
 });
 
-test('production refuses HTTP configuration and uses secure session cookies over HTTPS proxy origin', async t => {
+test('production blocks browser setup behind a loopback proxy and issues secure login cookies', async t => {
   assert.throws(() => createApp({ dbPath: ':memory:', production: true }), /Production requires/);
   const app = createApp({ dbPath: ':memory:', production: true, origin: 'https://tasks.example.com' });
   app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening');
   t.after(async () => { await new Promise(resolve => app.server.close(resolve)); app.store.close(); });
-  const response = await request(`http://127.0.0.1:${app.server.address().port}/api/setup`, { method: 'POST', headers: { Host: 'tasks.example.com', Origin: 'https://tasks.example.com', 'X-Requested-With': 'TaskManager', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', name: 'Administrator', password: newPassword() }) });
+  const base = `http://127.0.0.1:${app.server.address().port}/api`;
+  const headers = { Host: 'tasks.example.com', Origin: 'https://tasks.example.com', 'X-Requested-With': 'TaskManager', 'Content-Type': 'application/json' };
+  const password = newPassword();
+  const credentials = { username: 'admin', name: 'Administrator', password };
+  const setup = await request(`${base}/setup`, { method: 'POST', headers, body: JSON.stringify(credentials) });
+  assert.equal(setup.status, 403);
+  assert.equal(setup.headers.get('set-cookie'), null);
+  // A forbidden setup request must never spend the shared login budget of a reverse proxy.
+  for (let index = 0; index < 30; index++) {
+    const denied = await request(`${base}/setup`, { method: 'POST', headers, body: JSON.stringify({ username: `blocked-${index}` }) });
+    assert.equal(denied.status, 403);
+  }
+  const session = await (await request(`${base}/session`, { headers })).json();
+  assert.equal(session.setupRequired, true);
+  assert.equal(session.canSetup, false);
+  app.store.addUser({ ...credentials, password: await hashPassword(password), admin: true }, true);
+  const response = await request(`${base}/login`, { method: 'POST', headers, body: JSON.stringify(credentials) });
   assert.equal(response.status, 200); assert.ok(response.headers.get('set-cookie').includes('__Host-taskmanager='));
   assert.ok(response.headers.get('set-cookie').includes('; Secure'));
   assert.ok(response.headers.get('set-cookie').includes('; HttpOnly'));
   assert.ok(response.headers.get('set-cookie').includes('SameSite=Strict'));
+});
+
+test('a fresh server creates exactly one administrator when setup requests race', async t => {
+  const { server, store } = createApp({ dbPath: ':memory:' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); store.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const before = await (await request(`${base}/api/session`)).json();
+  assert.equal(before.setupRequired, true);
+  assert.equal(before.user, null);
+  const responses = await Promise.all(['first', 'second'].map(username => request(`${base}/api/setup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'TaskManager', Origin: base },
+    body: JSON.stringify({ username, name: username, password: newPassword(), admin: false })
+  })));
+  assert.deepEqual(responses.map(result => result.status).sort(), [200, 409]);
+  const winner = responses.find(result => result.status === 200);
+  assert.equal((await winner.json()).user.admin, true);
+  const cookie = winner.headers.get('set-cookie').split(';')[0];
+  const roster = await request(`${base}/api/users`, { headers: { Cookie: cookie } });
+  assert.equal(roster.status, 200);
+  assert.equal((await roster.json()).users.length, 1);
+  assert.equal((await (await request(`${base}/api/session`)).json()).setupRequired, false);
+});
+
+test('public assets support HEAD and do not expose source files or private APIs', async t => {
+  const f = await fixture(t);
+  for (const [path, mime] of [['/', 'text/html'], ['/app.js', 'text/javascript'], ['/style.css', 'text/css']]) {
+    const get = await request(`${f.base}${path}`);
+    const head = await request(`${f.base}${path}`, { method: 'HEAD' });
+    assert.equal(get.status, 200);
+    assert.ok(get.text.length > 0);
+    assert.ok(get.headers.get('content-type').startsWith(mime));
+    assert.equal(get.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get('content-type'), get.headers.get('content-type'));
+    assert.equal(head.text, '');
+  }
+  for (const path of ['/server.mjs', '/data/taskmanager.sqlite', '/%2e%2e/lib/store.mjs']) {
+    assert.equal((await request(`${f.base}${path}`)).status, 404);
+  }
+  const task = await f.task();
+  for (const path of ['/users', '/tasks', `/tasks/${task.id}`]) {
+    assert.equal((await f.client().request(path)).status, 401);
+  }
+  assert.equal((await f.client().request('/tasks', 'POST', task)).status, 401);
+});
+
+test('JSON validation rejects malformed bodies without changing the task list', async t => {
+  const f = await fixture(t);
+  for (const [body, mediaType, status] of [
+    ['{"title":', 'application/json', 400], ['null', 'application/json', 400],
+    ['[]', 'application/json', 400], ['"task"', 'application/json', 400],
+    ['{}', 'text/plain', 415], ['{}', 'application/x-www-form-urlencoded', 415]
+  ]) {
+    const response = await request(`${f.base}/api/tasks`, { method: 'POST', headers: {
+      'Content-Type': mediaType, 'X-Requested-With': 'TaskManager', 'X-CSRF-Token': f.admin.csrf,
+      Cookie: f.admin.cookie, Origin: f.base
+    }, body });
+    assert.equal(response.status, status, body);
+    assert.equal(typeof (await response.json()).error, 'string');
+  }
+  assert.deepEqual((await f.admin.request('/tasks')).value.tasks, []);
+});
+
+test('the request body limit applies to both length-delimited and chunked JSON', async t => {
+  const f = await fixture(t);
+  const body = JSON.stringify({ title: 'Large request', padding: 'x'.repeat(70 * 1024) });
+  for (const framing of [{ 'Content-Length': Buffer.byteLength(body) }, { 'Transfer-Encoding': 'chunked' }]) {
+    const response = await request(`${f.base}/api/tasks`, { method: 'POST', headers: {
+      'Content-Type': 'application/json', 'X-Requested-With': 'TaskManager', 'X-CSRF-Token': f.admin.csrf,
+      Cookie: f.admin.cookie, Origin: f.base, ...framing
+    }, body });
+    assert.equal(response.status, 413);
+    assert.equal(typeof (await response.json()).error, 'string');
+  }
+  assert.deepEqual((await f.admin.request('/tasks')).value.tasks, []);
+  await f.task();
+});
+
+test('logins rotate the previous session and CSRF tokens are bound to their session', async t => {
+  const f = await fixture(t);
+  const task = await f.task();
+  const secondSession = f.client();
+  assert.equal((await secondSession.request('/login', 'POST', { username: 'worker', password: f.worker.password })).status, 200);
+  const originalCookie = f.worker.account.cookie;
+  assert.equal((await f.worker.account.request(`/tasks/${task.id}/actions`, 'POST', { action: 'start', version: 1 }, { 'X-CSRF-Token': secondSession.csrf })).status, 403);
+  assert.equal((await f.admin.request(`/tasks/${task.id}`)).value.version, 1);
+
+  const login = await f.worker.account.request('/login', 'POST', { username: 'reviewer', password: f.reviewer.password });
+  assert.equal(login.status, 200);
+  assert.equal(login.value.user.id, f.reviewer.user.id);
+  assert.notEqual(f.worker.account.cookie, originalCookie);
+  assert.equal((await f.client().request('/tasks', 'GET', undefined, { Cookie: originalCookie })).status, 401);
+  assert.equal((await secondSession.request('/tasks')).status, 200);
+
+  const rotatedCookie = f.worker.account.cookie;
+  const logout = await f.worker.account.request('/logout', 'POST', {});
+  assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
+  assert.equal((await f.client().request('/tasks', 'GET', undefined, { Cookie: rotatedCookie })).status, 401);
+  assert.equal((await f.reviewer.account.request('/tasks')).status, 200);
+});
+
+test('an expired session cookie stays invalid across a restart and a fresh login', async t => {
+  const f = await fixture(t);
+  const oldCookie = f.worker.account.cookie;
+  const raw = oldCookie.slice(oldCookie.indexOf('=') + 1);
+  const hash = createHash('sha256').update(raw).digest('hex');
+  assert.equal(f.store.db.prepare('UPDATE sessions SET expires_at = ? WHERE hash = ?').run('2000-01-01T00:00:00.000Z', hash).changes, 1);
+  await f.restart();
+  const expired = await f.worker.account.request('/session');
+  assert.equal(expired.value.user, null);
+  assert.equal(expired.value.csrf, undefined);
+  assert.equal((await f.worker.account.request('/tasks')).status, 401);
+  assert.equal((await f.worker.account.request('/login', 'POST', { username: 'worker', password: f.worker.password })).status, 200);
+  assert.equal((await f.client().request('/tasks', 'GET', undefined, { Cookie: oldCookie })).status, 401);
+});
+
+test('task writes cannot impersonate creators or inject status, version or history', async t => {
+  const f = await fixture(t);
+  const forged = { creator_id: f.admin.user.id, status: 'done', version: 42, events: [{ action: 'approve' }] };
+  const task = await f.task(f.stranger.account, forged);
+  assert.equal(task.creator_id, f.stranger.user.id);
+  assert.equal(task.status, 'new');
+  assert.equal(task.version, 1);
+  assert.deepEqual(task.events.map(event => [event.action, event.actor_id]), [['created', f.stranger.user.id]]);
+  const next = await f.stranger.account.request(`/tasks/${task.id}`, 'PATCH', { ...task, ...forged, version: 1, title: 'Revised report' });
+  assert.equal(next.status, 200);
+  assert.equal(next.value.creator_id, f.stranger.user.id);
+  assert.equal(next.value.status, 'new');
+  assert.equal(next.value.version, 2);
+  assert.deepEqual(next.value.events.map(event => event.action), ['edited', 'created']);
+});
+
+test('conflicting reviewer decisions persist only the winner and its note', async t => {
+  const f = await fixture(t);
+  const task = await f.task();
+  const started = await f.act(f.worker.account, task, 'start');
+  const submitted = await f.act(f.worker.account, started.value, 'submit', 'Initial result');
+  assert.equal(submitted.status, 200);
+  const decisions = await Promise.all([
+    f.act(f.reviewer.account, submitted.value, 'approve', 'Looks good'),
+    f.act(f.reviewer.account, submitted.value, 'request_changes', 'Improve the layout')
+  ]);
+  assert.deepEqual(decisions.map(result => result.status).sort(), [200, 409]);
+  const winning = decisions.find(result => result.status === 200).value;
+  const persisted = (await f.admin.request(`/tasks/${task.id}`)).value;
+  assert.equal(persisted.version, submitted.value.version + 1);
+  assert.equal(persisted.events.length, submitted.value.events.length + 1);
+  assert.equal(persisted.status, winning.status);
+  assert.equal(persisted.events[0].note, winning.status === 'done' ? 'Looks good' : 'Improve the layout');
+});
+
+test('reassigning both roles replaces access but preserves prior assignment snapshots', async t => {
+  const f = await fixture(t);
+  const substitute = await f.addUser('substitute');
+  const task = await f.task();
+  const response = await f.admin.request(`/tasks/${task.id}`, 'PATCH', { ...task, assignee_id: f.stranger.user.id, reviewer_id: substitute.user.id });
+  assert.equal(response.status, 200);
+  for (const previous of [f.worker.account, f.reviewer.account]) {
+    assert.equal((await previous.request(`/tasks/${task.id}`)).status, 404);
+    assert.deepEqual((await previous.request('/tasks')).value.tasks, []);
+  }
+  const detail = (await substitute.account.request(`/tasks/${task.id}`)).value;
+  assert.equal(detail.events[1].snapshot.assignee_id, f.worker.user.id);
+  assert.equal(detail.events[1].snapshot.reviewer_id, f.reviewer.user.id);
+  assert.equal(detail.events[0].snapshot.assignee_id, f.stranger.user.id);
+  assert.equal(detail.events[0].snapshot.reviewer_id, substitute.user.id);
+  assert.equal((await f.act(f.stranger.account, response.value, 'start')).status, 200);
+});
+
+test('account reactivation permits a fresh login without restoring revoked sessions', async t => {
+  const f = await fixture(t);
+  const oldCookie = f.worker.account.cookie;
+  const endpoint = `/users/${f.worker.user.id}`;
+  const inactive = await f.admin.request(endpoint, 'PATCH', { ...f.worker.user, active: false });
+  assert.equal(inactive.status, 200);
+  const directory = (await f.reviewer.account.request('/users')).value;
+  assert.ok(!directory.users.some(user => user.id === f.worker.user.id));
+  assert.ok(directory.directory.some(user => user.id === f.worker.user.id));
+  assert.equal((await f.admin.request(endpoint, 'PATCH', { ...inactive.value.user, active: true })).status, 200);
+  assert.equal((await f.client().request('/tasks', 'GET', undefined, { Cookie: oldCookie })).status, 401);
+  assert.equal((await f.worker.account.request('/login', 'POST', { username: 'WORKER', password: f.worker.password })).status, 200);
+  assert.equal((await f.worker.account.request('/tasks')).status, 200);
+});
+
+test('concurrent administrator demotions cannot leave the workspace without an admin', async t => {
+  const f = await fixture(t);
+  const second = await f.addUser('second-admin', true);
+  const results = await Promise.all([
+    f.admin.request(`/users/${second.user.id}`, 'PATCH', { ...second.user, admin: false }),
+    second.account.request(`/users/${f.admin.user.id}`, 'PATCH', { ...f.admin.user, admin: false })
+  ]);
+  assert.deepEqual(results.map(result => result.status).sort(), [200, 401]);
+  const surviving = results[0].status === 200 ? f.admin : second.account;
+  const roster = (await surviving.request('/users')).value.users;
+  assert.deepEqual(roster.filter(user => user.active && user.admin).map(user => user.id), [surviving.user.id]);
+});
+
+test('revoking a session during password verification prevents the credential change', async t => {
+  const f = await fixture(t);
+  const raw = f.worker.account.cookie.split('=')[1];
+  const session = f.store.session.bind(f.store);
+  let intercepted = false;
+  // Revoke between the request's initial authorization and the async password check.
+  f.store.session = function (value) {
+    const user = session(value);
+    if (value === raw && user && !intercepted) {
+      intercepted = true;
+      queueMicrotask(() => this.logout(raw));
+    }
+    return user;
+  };
+  const attemptedPassword = newPassword();
+  const result = await f.worker.account.request('/password', 'POST', { current_password: f.worker.password, password: attemptedPassword });
+  assert.equal(intercepted, true);
+  assert.equal(result.status, 401);
+  assert.equal((await f.client().request('/login', 'POST', { username: 'worker', password: attemptedPassword })).status, 401);
+  assert.equal((await f.client().request('/login', 'POST', { username: 'worker', password: f.worker.password })).status, 200);
+});
+
+test('submission to a disabled reviewer leaves the task editable for reassignment', async t => {
+  const f = await fixture(t);
+  const task = await f.task();
+  const started = (await f.act(f.worker.account, task, 'start')).value;
+  assert.equal((await f.admin.request(`/users/${f.reviewer.user.id}`, 'PATCH', { ...f.reviewer.user, active: false })).status, 200);
+  const result = await f.act(f.worker.account, started, 'submit', 'Completed result');
+  assert.equal(result.status, 409);
+  const current = (await f.admin.request(`/tasks/${task.id}`)).value;
+  assert.equal(current.status, 'in_progress');
+  assert.equal(current.version, started.version);
+  assert.equal(current.events.length, started.events.length);
+  const reassigned = await f.admin.request(`/tasks/${task.id}`, 'PATCH', { ...current, reviewer_id: f.stranger.user.id });
+  assert.equal(reassigned.status, 200);
+  const submitted = await f.act(f.worker.account, reassigned.value, 'submit', 'Completed result');
+  assert.equal(submitted.status, 200);
+  assert.equal((await f.act(f.stranger.account, submitted.value, 'approve')).status, 200);
+});
+
+test('unknown actions including prototype names are rejected without advancing the task', async t => {
+  const f = await fixture(t);
+  const task = await f.task();
+  for (const action of ['cancel', 'toString', 'constructor', '__proto__']) {
+    assert.equal((await f.act(f.worker.account, task, action)).status, 400, action);
+  }
+  const current = (await f.worker.account.request(`/tasks/${task.id}`)).value;
+  assert.equal(current.version, 1);
+  assert.equal(current.events.length, 1);
 });

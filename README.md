@@ -5,7 +5,8 @@ Every task has a creator, an assignee and a separate reviewer. The assignee subm
 the reviewer approves it or returns it with a reason. Each round stays in the task history.
 
 This folder is independent of the WildCat backend. It uses Node.js 24.13 or newer, the built-in
-SQLite database and plain browser JavaScript. There are no npm packages to install or build.
+SQLite database and plain browser JavaScript. Running the app does not require installing npm
+packages or building assets.
 
 ## Start on this computer
 
@@ -16,9 +17,10 @@ npm start
 ```
 
 Open [the local app](http://127.0.0.1:4310). On the first visit, create the administrator account
-with a password of at least 12 characters. Initial browser setup is only available from the
-server's loopback address and closes once the first account exists. No account or default
-password ships with the app.
+with a password of at least 12 characters. Browser setup is available on loopback with the
+default local configuration and closes once the first account exists. If `APP_ORIGIN` is set
+or the app runs in production, initialize it on the server with `node scripts/setup.mjs`.
+No account or default password ships with the app.
 
 In the team page, create accounts for your colleagues. An administrator can assign themselves
 to a task, but each task still needs two different people as assignee and reviewer. Use separate
@@ -52,9 +54,10 @@ unlocked tasks, but administration alone does not allow starting, submitting or 
 Unrelated users cannot read a task even if they know its URL. Only the creator or an administrator
 can edit the title, description, due date and assignments. Edits record a new snapshot in history.
 
-Tasks in review and completed tasks are read-only. If a colleague is unavailable, an
-administrator can reactivate their account; reassignment of a task waiting for review is not
-part of this version. Completed tasks cannot be reopened or deleted.
+If a reviewer is inactive when you submit, the task stays editable so its creator or an
+administrator can assign an active reviewer. Tasks already in review and completed tasks are
+read-only. If a reviewer is disabled after submission, an administrator can reactivate that
+account to finish the review. Completed tasks cannot be reopened or deleted.
 
 The dashboard shows your open tasks, pending reviews, revision requests and completed tasks.
 Use the task lists, title search and status/person filters to narrow the view. Refresh retrieves
@@ -81,11 +84,25 @@ Mutations require the session's CSRF token and a same-origin request. Login atte
 per account and connection address for 15 minutes. Behind Caddy the connection limit is shared
 by all users, with 30 attempts per 15 minutes, so use this version for a small team.
 
-## Verify and back up
+## Run the tests
 
 ```powershell
 npm run check
 npm test
+```
+
+To run the browser tests as well, install the development dependencies and Chromium headless
+shell once. The browser tests start isolated local servers with temporary databases.
+
+```powershell
+npm ci
+npx playwright install chromium --only-shell
+npm run verify
+```
+
+## Back up and restore
+
+```powershell
 npm run backup
 ```
 
@@ -96,8 +113,10 @@ the command with your operating system's scheduler. The app does not install sch
 To restore, stop the application and preserve its current data directory as a separate recovery
 copy. Create a clean data directory, copy the chosen backup into it as `taskmanager.sqlite`, then
 start the app with that directory. Do not mix a restored database with old `-wal` or `-shm` files.
-Backups contain account hashes, task contents and sessions and need the same protection as the
-live database. A backup can restore sessions that were active when it was taken.
+Backups contain account hashes and task contents, so protect them like the live database.
+New backups exclude sessions. Users sign in again after a restore. If you must restore a
+backup made before sessions were excluded, clear its sessions before starting the app; see
+[the restore instructions](docs/deployment.md#persistent-storage-and-backup).
 
 See [deployment](docs/deployment.md) for Docker, HTTPS, backups and updates, and
 [the acceptance walkthrough](docs/acceptance.md) for a first team test.
