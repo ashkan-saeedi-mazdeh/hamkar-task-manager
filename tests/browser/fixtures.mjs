@@ -65,7 +65,7 @@ export async function signIn(page, app, actor) {
   await page.getByLabel('نام کاربری', { exact: true }).fill(actor.username);
   await page.getByLabel('رمز عبور', { exact: true }).fill(actor.password);
   await page.getByRole('button', { name: 'ورود به فضای کار', exact: true }).click();
-  await expect(page.getByRole('button', { name: '+ کار جدید', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'کار جدید', exact: true })).toBeVisible();
 }
 
 export async function openTask(page, app, task) {

@@ -6,7 +6,12 @@ import { Store, AppError, requireThat, publicUser, hashPassword, verifyPassword,
 
 const root = dirname(fileURLToPath(import.meta.url));
 const MAX_BODY = 64 * 1024;
-const assets = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
+const assets = {
+  '/': ['index.html', 'text/html; charset=utf-8'],
+  '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+  '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/vazirmatn.woff2': ['vazirmatn.woff2', 'font/woff2']
+};
 const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
 
 function field(value, label, max, min = 1) {

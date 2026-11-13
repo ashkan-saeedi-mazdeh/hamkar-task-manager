@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hamkar UI comparison</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color: #173c36; background: #edf1ed; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { padding: 20px 24px; background: #fff; border-bottom: 1px solid #cbd6ce; }
+    h1 { margin: 0 0 4px; font-size: 23px; }
+    p { margin: 0; color: #53665e; }
+    .toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+    label { display: grid; gap: 4px; font-size: 14px; font-weight: 600; }
+    select, button, a { font: inherit; }
+    select, button { min-height: 44px; border: 1px solid #a8b9af; border-radius: 7px; background: #fff; padding: 8px 12px; color: inherit; }
+    button { cursor: pointer; }
+    button:hover { background: #e5eee7; }
+    :focus-visible { outline: 3px solid #2b7860; outline-offset: 3px; }
+    main { padding: 20px 24px; }
+    #status { margin-bottom: 14px; }
+    #frames { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+    #frames.single { grid-template-columns: minmax(0, 1fr); }
+    figure { min-width: 0; margin: 0; }
+    figcaption { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; font-weight: 700; }
+    figcaption a { color: #285e4d; font-size: 13px; font-weight: 400; }
+    img { display: block; width: 100%; height: auto; border: 1px solid #bccbc0; background: #fff; }
+    .phone { max-width: 390px; margin-inline: auto; }
+    [hidden] { display: none !important; }
+    footer { padding: 0 24px 24px; color: #53665e; font-size: 14px; }
+    @media (max-width: 800px) { #frames { grid-template-columns: 1fr; } header, main { padding: 16px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Hamkar UI comparison</h1>
+    <p>Matching views with synthetic data. Original PNG files keep their capture resolution.</p>
+    <div class="toolbar">
+      <label>View <select id="view"></select></label>
+      <label>Display <select id="mode"><option value="both">Side by side</option><option value="before">Before only</option><option value="after">After only</option></select></label>
+      <button type="button" id="previous">Previous view</button>
+      <button type="button" id="next">Next view</button>
+      <button type="button" id="toggle">Toggle before / after</button>
+    </div>
+  </header>
+  <main>
+    <p id="status" aria-live="polite"></p>
+    <div id="frames">
+      <figure id="before"><figcaption>Before <a id="before-link">Open original PNG</a></figcaption><img id="before-image" alt=""></figure>
+      <figure id="after"><figcaption>After <a id="after-link">Open original PNG</a></figcaption><img id="after-image" alt=""></figure>
+    </div>
+  </main>
+  <footer>Use Left / Right to move between views, or B / A to show before / after. <a href="README.md">Capture notes</a></footer>
+  <script>
+    const views = [
+      ['01-desktop-login', 'Desktop - Sign in'],
+      ['02-desktop-dashboard', 'Desktop - Dashboard'],
+      ['03-desktop-my-tasks', 'Desktop - My tasks'],
+      ['04-desktop-task-feedback', 'Desktop - Revision feedback'],
+      ['05-desktop-submit-result', 'Desktop - Submit a result'],
+      ['06-desktop-new-task', 'Desktop - Create a task'],
+      ['07-desktop-review-queue', 'Desktop - Review queue'],
+      ['08-desktop-review-detail', 'Desktop - Review details'],
+      ['09-desktop-team', 'Desktop - Team'],
+      ['10-phone-dashboard', 'Phone - Dashboard'],
+      ['11-phone-my-tasks', 'Phone - My tasks'],
+      ['12-phone-task-feedback', 'Phone - Revision feedback']
+    ];
+    const view = document.querySelector('#view');
+    const mode = document.querySelector('#mode');
+    for (const [value, label] of views) view.add(new Option(label, value));
+    function render() {
+      const [name, label] = views[view.selectedIndex];
+      const phone = name.includes('phone');
+      for (const phase of ['before', 'after']) {
+        const frame = document.querySelector(`#${phase}`);
+        const image = document.querySelector(`#${phase}-image`);
+        frame.hidden = mode.value !== 'both' && mode.value !== phase;
+        frame.classList.toggle('phone', phone);
+        image.alt = `${label}, ${phase} the redesign`;
+        image.width = phone ? 390 : 1440;
+        image.height = phone ? 844 : 960;
+        image.src = `${phase}/${name}.png`;
+        document.querySelector(`#${phase}-link`).href = image.src;
+      }
+      document.querySelector('#frames').classList.toggle('single', mode.value !== 'both');
+      document.querySelector('#status').textContent = `${view.selectedIndex + 1} of ${views.length}: ${label}. ${phone ? '390 x 844' : '1440 x 960'} pixels.`;
+    }
+    function move(step) { view.selectedIndex = (view.selectedIndex + step + views.length) % views.length; render(); }
+    view.addEventListener('change', render);
+    mode.addEventListener('change', render);
+    document.querySelector('#previous').onclick = () => move(-1);
+    document.querySelector('#next').onclick = () => move(1);
+    document.querySelector('#toggle').onclick = () => { mode.value = mode.value === 'before' ? 'after' : 'before'; render(); };
+    document.addEventListener('keydown', event => {
+      if (event.ctrlKey || event.metaKey || event.altKey || /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(event.target.tagName)) return;
+      if (event.key === 'ArrowLeft') { event.preventDefault(); move(-1); }
+      if (event.key === 'ArrowRight') { event.preventDefault(); move(1); }
+      if (event.key.toLowerCase() === 'b') { mode.value = 'before'; render(); }
+      if (event.key.toLowerCase() === 'a') { mode.value = 'after'; render(); }
+    });
+    render();
+  </script>
+</body>
+</html>

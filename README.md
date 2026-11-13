@@ -59,9 +59,15 @@ administrator can assign an active reviewer. Tasks already in review and complet
 read-only. If a reviewer is disabled after submission, an administrator can reactivate that
 account to finish the review. Completed tasks cannot be reopened or deleted.
 
-The dashboard shows your open tasks, pending reviews, revision requests and completed tasks.
-Use the task lists, title search and status/person filters to narrow the view. Refresh retrieves
-the latest changes. There is no background synchronization or offline editing.
+Select a count on the dashboard to open your tasks, pending reviews, revision requests or
+completed work. The dashboard puts tasks with an action for you first. Start a ready task or
+open the result form directly from its row. A task returned for changes opens with the reviewer's
+note; a task in review opens with the latest result and the reviewer's decision buttons.
+
+Search by title or open Filters to narrow the list by status and people. When you open a task
+from a list, Back to tasks restores the search, filters and your place in the list. On a desktop
+keyboard, Alt+F focuses task search and Alt+N opens the new task form where available. Refresh
+retrieves the latest changes. There is no background synchronization or offline editing.
 
 Each change includes the task's version. A stale action is rejected instead of overwriting a
 colleague's change. The app retrieves the current task while keeping your unsaved form open.

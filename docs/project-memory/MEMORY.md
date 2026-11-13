@@ -49,3 +49,29 @@ local; no push or public deployment was requested.
 
 Final verification on Windows passed the syntax checks, all 33 Node tests, all 15 Chromium
 tests, and Compose configuration validation. No live deployment or physical-phone test ran.
+
+## Task desk interface refresh, 2026-11-13
+
+The owner asked for a more readable Persian interface and shorter paths through common tasks.
+Dashboard counts now open their queues; the dashboard lists work with a next action first.
+Assignees can start from a row in one click instead of opening the detail and confirming.
+They can open and submit the result form from the list. Reviewers see the latest result
+above the description, and assignees see current correction feedback in the same place.
+Returning from a task restores the list's search, filters, expanded rows, scroll and focus.
+The server still owns permissions, version checks, state transitions and history.
+
+The interface uses a local Vazirmatn font, shared outline icons, larger Persian labels, a
+compact dashboard and reduced motion support. `DESIGN.md` records the design and font source.
+The [comparison viewer](../ui-comparison/index.html) pairs 12 before and after scenes using
+the same disposable fixture and fixed dates. See [capture notes](../ui-comparison/README.md)
+for baseline revision, roles, dimensions and reproduction commands. The preview stopped after
+capture and did not use the user's data on port 4310.
+
+`npm run verify` passed on Windows: syntax checks, 33 Node tests and 22 Chromium tests.
+The added tests cover row actions and audited results, stale submission recovery, return
+context across a long list, keyboard shortcuts, reduced motion and reviewer actions at a
+320-pixel viewport. Two additional race tests verify that a pending start stays disabled after
+search and viewport changes, and that its delayed response cannot restore access after
+reassignment. The comparison viewer loaded all 24 images at matching dimensions, switched
+between scenes and phases, fit a phone viewport, and raised no browser errors. Physical-phone
+testing and public deployment were outside this work.

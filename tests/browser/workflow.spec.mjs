@@ -6,9 +6,9 @@ test('first administrator can set up the workspace, add staff, and assign a task
   await page.getByLabel('نام کاربری', { exact: true }).fill('sara');
   await page.getByLabel('رمز عبور', { exact: true }).fill(newPassword());
   await page.getByRole('button', { name: 'ساخت حساب و ورود', exact: true }).click();
-  await page.getByRole('button', { name: 'اعضای تیم', exact: true }).click();
+  await page.getByRole('link', { name: 'اعضای تیم', exact: true }).click();
   for (const [username, name] of [['arman', 'آرمان'], ['niloufar', 'نیلوفر']]) {
-    await page.getByRole('button', { name: '+ عضو جدید', exact: true }).click();
+    await page.getByRole('button', { name: 'عضو جدید', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByLabel('نام و نام خانوادگی', { exact: true }).fill(name);
     await dialog.getByLabel('نام کاربری', { exact: true }).fill(username);
@@ -16,8 +16,8 @@ test('first administrator can set up the workspace, add staff, and assign a task
     await dialog.getByRole('button', { name: 'ساخت حساب', exact: true }).click();
     await expect(page.getByText(name, { exact: true })).toBeVisible();
   }
-  await page.getByRole('button', { name: 'نمای کلی', exact: true }).click();
-  await page.getByRole('button', { name: '+ کار جدید', exact: true }).click();
+  await page.getByRole('link', { name: 'نمای کلی', exact: true }).click();
+  await page.getByRole('button', { name: 'کار جدید', exact: true }).click();
   const form = page.getByRole('dialog');
   await form.getByLabel('عنوان کار', { exact: true }).fill('آماده‌سازی راهنما');
   await form.getByLabel('توضیح کار و نتیجه مورد انتظار', { exact: true }).fill('راهنمای شروع را بنویسید.');
@@ -45,9 +45,9 @@ test('assignee and reviewer complete a revision cycle with separate browser sess
     await expect(page.getByRole('button', { name: 'تایید و تکمیل کار' })).toHaveCount(0);
 
     await signIn(reviewer, app, team.reviewer);
-    await reviewer.getByRole('button', { name: /بازبینی‌های من/ }).click();
-    await reviewer.getByRole('button', { name: new RegExp(task.title) }).click();
-    await expect(reviewer.getByText('نسخه اول آماده است.', { exact: true })).toBeVisible();
+    await reviewer.getByRole('link', { name: /بازبینی‌های من/ }).click();
+    await reviewer.getByRole('link', { name: new RegExp(task.title) }).click();
+    await expect(reviewer.locator('.action-card').getByText('نسخه اول آماده است.', { exact: true })).toBeVisible();
     await perform(reviewer, 'برگشت برای اصلاح', 'درخواست اصلاح', 'مثال دوم را اضافه کنید.');
     await expect(reviewer.getByText('نیازمند اصلاح', { exact: true })).toBeVisible();
 
@@ -81,6 +81,7 @@ test('search and role filters combine without showing tasks outside the selected
   await expect(results.getByRole('row')).toHaveCount(3);
   await search.fill('گزارش');
   await expect(results.getByRole('row')).toHaveCount(2);
+  await page.getByRole('button', { name: 'فیلترها', exact: true }).click();
   await page.getByLabel('فیلتر وضعیت').selectOption('in_review');
   await expect(results.getByRole('row')).toHaveCount(1);
   await expect(results.getByRole('row')).toContainText('گزارش ساخت');
@@ -125,11 +126,11 @@ test('user-supplied markup is displayed as text in task lists, details and histo
   task = await team.action(team.worker, task, 'start');
   task = await team.action(team.worker, task, 'submit', `Result ${markup}`);
   await signIn(page, app, team.worker);
-  await expect(page.getByRole('button', { name: new RegExp('img src=x') })).toBeVisible();
+  await expect(page.getByRole('link', { name: new RegExp('img src=x') })).toBeVisible();
   await expect(page.locator('tbody').getByText(name, { exact: true })).toBeVisible();
   await openTask(page, app, task);
   await expect(page.getByText(`Description ${markup}`, { exact: true })).toBeVisible();
-  await expect(page.getByText(`Result ${markup}`, { exact: true })).toBeVisible();
+  await expect(page.locator('.action-card').getByText(`Result ${markup}`, { exact: true })).toBeVisible();
   await expect(page.locator('i').filter({ hasText: /Reviewer/ })).toHaveCount(0);
   await expect(page.locator('img[src="x"]')).toHaveCount(0);
 });
@@ -194,7 +195,7 @@ test('selecting the current mobile menu item closes it without discarding the fi
   await search.fill('گزارش');
   const menu = page.getByRole('button', { name: 'باز کردن منو' });
   await menu.click();
-  await page.getByRole('button', { name: 'نمای کلی', exact: true }).click();
+  await page.getByRole('link', { name: 'نمای کلی', exact: true }).click();
   await expect(menu).toHaveAttribute('aria-expanded', 'false');
   await expect(menu).toBeFocused();
   await expect(search).toHaveValue('گزارش');
@@ -213,8 +214,8 @@ test('a saved edit is shown when a separate list refresh would fail', async ({ p
   await dialog.getByRole('button', { name: 'ذخیره تغییرات', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'پس از ویرایش' })).toBeVisible();
   await expect(page.getByRole('status')).toContainText('تغییرات ذخیره شد.');
-  await page.getByRole('button', { name: 'بازگشت به کارها', exact: true }).click();
-  await expect(page.getByRole('button', { name: /پس از ویرایش/ })).toBeVisible();
+  await page.getByRole('link', { name: 'بازگشت به کارها', exact: true }).click();
+  await expect(page.getByRole('link', { name: /پس از ویرایش/ })).toBeVisible();
 });
 
 test('a task link opened before sign-in returns to that task after login', async ({ page, app, team }) => {
@@ -230,7 +231,7 @@ test('a task link opened before sign-in returns to that task after login', async
 
 test('a saved account update reports success separately from a failed list refresh', async ({ page, app, team }) => {
   await signIn(page, app, team.admin);
-  await page.getByRole('button', { name: 'اعضای تیم', exact: true }).click();
+  await page.getByRole('link', { name: 'اعضای تیم', exact: true }).click();
   const card = page.getByRole('article').filter({ hasText: team.worker.user.name });
   await card.getByRole('button', { name: 'مدیریت حساب', exact: true }).click();
   const dialog = page.getByRole('dialog');
@@ -301,7 +302,7 @@ test('a delayed successful save cannot replace a newer saved task revision', asy
 
 test('saving the signed-in account closes any dialog when it ends the session', async ({ page, app, team }) => {
   await signIn(page, app, team.admin);
-  await page.getByRole('button', { name: 'اعضای تیم', exact: true }).click();
+  await page.getByRole('link', { name: 'اعضای تیم', exact: true }).click();
   await page.getByRole('article').filter({ hasText: team.admin.name }).getByRole('button', { name: 'مدیریت حساب', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('نام و نام خانوادگی', { exact: true }).fill('نام تازه مدیر');
@@ -317,7 +318,7 @@ test('saving the signed-in account closes any dialog when it ends the session', 
     await dialog.getByRole('button', { name: 'ذخیره تغییرات', exact: true }).click();
     await held.promise;
     await dialog.getByRole('button', { name: 'انصراف', exact: true }).click();
-    await page.getByRole('button', { name: '+ عضو جدید', exact: true }).click();
+    await page.getByRole('button', { name: 'عضو جدید', exact: true }).click();
     await expect(dialog.getByRole('heading', { name: 'افزودن همکار جدید' })).toBeVisible();
     release.resolve();
     await expect(dialog).toBeHidden();
@@ -356,8 +357,8 @@ test('a delayed action cannot restore a task after its assignment is removed', a
     await (await response).finished();
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     await expect(denied).toBeVisible();
-    await page.getByRole('button', { name: 'بازگشت به کارها', exact: true }).click();
+    await page.getByRole('link', { name: 'بازگشت به کارها', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'در این فهرست کاری نیست', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: new RegExp(task.title) })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: new RegExp(task.title) })).toHaveCount(0);
   } finally { release.resolve(); }
 });
