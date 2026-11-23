@@ -6,11 +6,10 @@ const faTimes = new Intl.DateTimeFormat('fa-IR', { dateStyle: 'medium', timeStyl
 const faNumber = value => faNumbers.format(value);
 const date = value => value ? faDates.format(new Date(value.length === 10 ? `${value}T12:00:00` : value)) : 'بدون مهلت';
 const time = value => faTimes.format(new Date(value));
-const states = { new: 'آماده شروع', in_progress: 'در حال انجام', in_review: 'در انتظار بازبینی', changes_requested: 'نیازمند اصلاح', done: 'تکمیل‌شده' };
-const actions = { created: 'کار را ایجاد کرد', edited: 'اطلاعات کار را ویرایش کرد', start: 'کار را شروع کرد', submit: 'نتیجه را برای بازبینی فرستاد', request_changes: 'درخواست اصلاح ثبت کرد', approve: 'کار را تایید کرد' };
+const historyActions = { created: 'کار را ایجاد کرد', edited: 'اطلاعات کار را ویرایش کرد' };
 const views = { dashboard: 'نمای کلی', mine: 'کارهای من', review: 'بازبینی‌های من', created: 'ساخته‌های من', all: 'همه کارها', users: 'اعضای تیم' };
 const emptyFilter = () => ({ search: '', status: '', assignee: '', reviewer: '' });
-const state = { user: null, csrf: '', tasks: [], users: [], directory: [], people: new Map(), view: 'dashboard', filter: emptyFilter(), detail: null };
+const state = { user: null, csrf: '', tasks: [], taskTypes: {}, defaultType: '', users: [], directory: [], people: new Map(), view: 'dashboard', filter: emptyFilter(), detail: null };
 const pendingStarts = new Set();
 const paths = {
   mark: 'M4 7h9M4 12h6M4 17h4m6-1 3 3 5-7',
@@ -65,9 +64,26 @@ function userName(id) { return state.people.get(id) || 'کاربر'; }
 function initials(name) { return escapeHtml((name || '').split(/\s+/).slice(0, 2).map(v => [...v][0]).join('')); }
 function avatar(name) { return `<span class="avatar" aria-hidden="true">${initials(name)}</span>`; }
 function person(id) { const name = userName(id); return `<span class="person">${avatar(name)}<span>${escapeHtml(name)}</span></span>`; }
-function badge(status) { return `<span class="badge ${status}">${states[status]}</span>`; }
+const taskType = task => state.taskTypes[task.type];
+const taskStatus = task => taskType(task)?.statuses[task.status];
+const terminal = task => taskStatus(task)?.terminal;
+const needsRevision = task => taskStatus(task)?.revision;
+const pendingReview = task => taskStatus(task)?.review && task.reviewer_id === state.user.id;
+const standard = task => task.type === 'standard';
+const taskBuckets = {
+  open: { label: 'کارهای باز', match: task => !terminal(task) },
+  completed: { label: 'همه کارهای تکمیل‌شده', match: terminal },
+  revisions: { label: 'همه کارهای نیازمند اصلاح', match: needsRevision }
+};
+function statusOptions() {
+  return Object.fromEntries(Object.values(state.taskTypes).flatMap(type =>
+    Object.entries(type.statuses).map(([id, status]) => [id, status.label])));
+}
+function badge(task) {
+  return `<span class="badge ${escapeHtml(task.status)}">${escapeHtml(taskStatus(task)?.label ?? task.status)}</span>`;
+}
 const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-function overdue(task) { return task.due_date && task.status !== 'done' && task.due_date < today(); }
+function overdue(task) { return task.due_date && !terminal(task) && task.due_date < today(); }
 function brand(extra = '') { return `<div class="brand ${extra}" translate="no"><span class="brand-mark">${icon('mark')}</span><span>همکار</span></div>`; }
 function showError(container, message) {
   let error = container.querySelector('.error');
@@ -113,13 +129,14 @@ async function loadWorkspace() {
   const owner = state.user;
   const [taskResult, userResult] = await Promise.all([api('/tasks'), api('/users')]);
   if (generation !== loadGeneration || !owner || state.user !== owner) return;
-  state.tasks = taskResult.tasks; state.users = userResult.users; state.directory = userResult.directory;
+  state.tasks = taskResult.tasks; state.taskTypes = taskResult.task_types; state.defaultType = taskResult.default_type;
+  state.users = userResult.users; state.directory = userResult.directory;
   state.people = new Map(state.directory.map(user => [user.id, user.name]));
   ++taskAccessGeneration;
   await route();
 }
 function renderShell() {
-  const pending = state.tasks.filter(task => task.reviewer_id === state.user.id && task.status === 'in_review').length;
+  const pending = state.tasks.filter(pendingReview).length;
   const nav = key => `<a href="#${key}" data-view="${key}" ${state.view === key ? 'aria-current="page"' : ''}>${icon(key)}<span>${views[key]}</span>${key === 'review' ? `<span class="count" id="review-count" ${pending ? '' : 'hidden'}>${faNumber(pending)}</span>` : ''}</a>`;
   $('#app').innerHTML = `<div class="shell"><aside id="sidebar" class="sidebar" aria-label="منوی اصلی"><div class="sidebar-head">${brand()}<button id="nav-close" class="mobile-menu icon-button ghost" aria-label="بستن منو">${icon('close')}</button></div><nav class="nav" aria-label="فضای کار"><div class="nav-label">فضای کار</div>${['dashboard', 'mine', 'review', 'created', 'all'].map(nav).join('')}${state.user.admin ? `<div class="nav-label nav-separator">مدیریت</div>${nav('users')}` : ''}</nav><button class="profile" id="account" aria-label="تنظیمات حساب">${avatar(state.user.name)}<span class="profile-copy"><strong>${escapeHtml(state.user.name)}</strong><small>${state.user.admin ? 'مدیر سیستم' : 'عضو تیم'}</small></span>${icon('account')}</button></aside><div class="sidebar-scrim" aria-hidden="true"></div><div class="content"><header class="topbar"><button class="mobile-menu icon-button" id="menu" aria-label="باز کردن منو" aria-controls="sidebar" aria-expanded="false">${icon('menu')}</button><div class="crumb"><span>فضای کار</span><span aria-hidden="true">/</span><strong>${views[state.view] || 'جزئیات کار'}</strong></div><div class="topbar-meta">${icon('calendar')}<span>${date(new Date().toISOString())}</span></div></header><main id="main" class="page" tabindex="-1"></main></div></div>`;
   document.querySelectorAll('[data-view]').forEach(link => link.onclick = event => {
@@ -217,7 +234,8 @@ async function route(savedTask = null, focus = false) {
   const query = new URLSearchParams(params);
   state.filter = emptyFilter();
   for (const key of Object.keys(state.filter)) state.filter[key] = query.get(key) || '';
-  if (!Object.hasOwn(states, state.filter.status) && !(state.view === 'mine' && state.filter.status === 'open')) state.filter.status = '';
+  if (!Object.hasOwn(statusOptions(), state.filter.status) &&
+      !(state.view === 'mine' && Object.hasOwn(taskBuckets, state.filter.status))) state.filter.status = '';
   if (state.view === 'review') state.filter.status = '';
   renderShell(); if (state.view === 'users') renderUsers(); else renderList();
   if (focus) {
@@ -247,16 +265,16 @@ function optionUsers(selected = '', empty = 'همه افراد', includeInactive
 function summaryStats() {
   const mine = state.tasks.filter(task => task.assignee_id === state.user.id);
   return [
-    ['mine', 'open', 'کارهای باز من', mine.filter(task => task.status !== 'done').length, 'mine'],
-    ['review', '', 'منتظر بازبینی من', state.tasks.filter(task => task.reviewer_id === state.user.id && task.status === 'in_review').length, 'review'],
-    ['mine', 'changes_requested', 'نیازمند اصلاح', mine.filter(task => task.status === 'changes_requested').length, 'revise'],
-    ['mine', 'done', 'تکمیل‌شده', mine.filter(task => task.status === 'done').length, 'check']
+    ['mine', 'open', 'کارهای باز من', mine.filter(task => !terminal(task)).length, 'mine'],
+    ['review', '', 'منتظر بازبینی من', state.tasks.filter(pendingReview).length, 'review'],
+    ['mine', 'revisions', 'نیازمند اصلاح', mine.filter(needsRevision).length, 'revise'],
+    ['mine', 'completed', 'تکمیل‌شده', mine.filter(terminal).length, 'check']
   ].map(([view, status, label, count, symbol]) => `<a class="stat stat-${symbol}" href="${listHash(view, { status })}"><span class="stat-icon">${icon(symbol)}</span><span>${label}</span><strong>${faNumber(count)}</strong></a>`).join('');
 }
 function syncTaskCounts() {
   const count = $('#review-count');
   if (count) {
-    const pending = state.tasks.filter(task => task.reviewer_id === state.user.id && task.status === 'in_review').length;
+    const pending = state.tasks.filter(pendingReview).length;
     count.hidden = !pending; count.textContent = faNumber(pending);
   }
   if ($('.stats')) $('.stats').innerHTML = summaryStats();
@@ -275,10 +293,11 @@ function updateFilters() {
 }
 function renderList() {
   const dashboard = state.view === 'dashboard';
-  const statuses = { ...(state.view === 'mine' ? { open: 'کارهای باز' } : {}), ...states };
+  const buckets = state.view === 'mine' ? Object.entries(taskBuckets).map(([id, bucket]) => [id, bucket.label]) : [];
+  const statuses = { ...Object.fromEntries(buckets), ...statusOptions() };
   const filtersOpen = state.filter.assignee || state.filter.reviewer || state.filter.status;
   visibleTasks = history.state?.visibleTasks || 50;
-  $('#main').innerHTML = `${pageHeading(views[state.view], listLabels[state.view])}${dashboard ? `<section class="stats" aria-label="وضعیت کارهای شما">${summaryStats()}</section>` : ''}${state.users.filter(user => user.active).length < 2 ? `<div class="notice">برای ساخت کار، دست‌کم دو حساب فعال لازم است. ${state.user.admin ? '<a href="#users">افزودن همکار</a>' : 'از مدیر سیستم بخواهید یک حساب دیگر اضافه کند.'}</div>` : ''}<section class="panel" aria-label="فهرست کارها"><div class="list-head"><h2>${dashboard ? 'تابلوی کار' : 'فهرست کارها'}</h2><p id="result-count" aria-live="polite"></p></div><div class="filters"><div class="search-field">${icon('search')}<input id="search" name="search" type="search" maxlength="200" autocomplete="off" aria-label="جست‌وجوی عنوان کار" aria-keyshortcuts="Alt+F" placeholder="جست‌وجوی عنوان کار..." value="${escapeHtml(state.filter.search)}"><kbd class="search-shortcut" aria-hidden="true" dir="ltr">Alt+F</kbd></div><button id="toggle-filters" aria-expanded="${Boolean(filtersOpen)}" aria-controls="filter-options">${icon('filters')}فیلترها<span id="filter-count" class="count" hidden></span></button></div><div id="filter-options" class="filter-options" ${filtersOpen ? '' : 'hidden'}>${state.view === 'review' ? '' : `<div><label for="status-filter">وضعیت</label><select id="status-filter" name="status" aria-label="فیلتر وضعیت"><option value="">همه وضعیت‌ها</option>${Object.entries(statuses).map(([key, label]) => `<option value="${key}" ${state.filter.status === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div>`}<div><label for="assignee-filter">انجام‌دهنده</label><select id="assignee-filter" name="assignee" aria-label="فیلتر انجام‌دهنده">${optionUsers(state.filter.assignee, 'همه انجام‌دهنده‌ها', true)}</select></div><div><label for="reviewer-filter">مدیر پیگیری</label><select id="reviewer-filter" name="reviewer" aria-label="فیلتر مدیر پیگیری">${optionUsers(state.filter.reviewer, 'همه مدیران پیگیری', true)}</select></div><button id="clear-filters" class="ghost">پاک کردن فیلترها</button></div><div id="task-results"></div></section>`;
+  $('#main').innerHTML = `${pageHeading(views[state.view], listLabels[state.view])}${dashboard ? `<section class="stats" aria-label="وضعیت کارهای شما">${summaryStats()}</section>` : ''}${state.users.filter(user => user.active).length < 2 ? `<div class="notice">برای ساخت کار، دست‌کم دو حساب فعال لازم است. ${state.user.admin ? '<a href="#users">افزودن همکار</a>' : 'از مدیر سیستم بخواهید یک حساب دیگر اضافه کند.'}</div>` : ''}<section class="panel" aria-label="فهرست کارها"><div class="list-head"><h2>${dashboard ? 'تابلوی کار' : 'فهرست کارها'}</h2><p id="result-count" aria-live="polite"></p></div><div class="filters"><div class="search-field">${icon('search')}<input id="search" name="search" type="search" maxlength="200" autocomplete="off" aria-label="جست‌وجوی عنوان کار" aria-keyshortcuts="Alt+F" placeholder="جست‌وجوی عنوان کار..." value="${escapeHtml(state.filter.search)}"><kbd class="search-shortcut" aria-hidden="true" dir="ltr">Alt+F</kbd></div><button id="toggle-filters" aria-expanded="${Boolean(filtersOpen)}" aria-controls="filter-options">${icon('filters')}فیلترها<span id="filter-count" class="count" hidden></span></button></div><div id="filter-options" class="filter-options" ${filtersOpen ? '' : 'hidden'}>${state.view === 'review' ? '' : `<div><label for="status-filter">وضعیت</label><select id="status-filter" name="status" aria-label="فیلتر وضعیت"><option value="">همه وضعیت‌ها</option>${Object.entries(statuses).map(([key, label]) => `<option value="${escapeHtml(key)}" ${state.filter.status === key ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></div>`}<div><label for="assignee-filter">انجام‌دهنده</label><select id="assignee-filter" name="assignee" aria-label="فیلتر انجام‌دهنده">${optionUsers(state.filter.assignee, 'همه انجام‌دهنده‌ها', true)}</select></div><div><label for="reviewer-filter">مدیر پیگیری</label><select id="reviewer-filter" name="reviewer" aria-label="فیلتر مدیر پیگیری">${optionUsers(state.filter.reviewer, 'همه مدیران پیگیری', true)}</select></div><button id="clear-filters" class="ghost">پاک کردن فیلترها</button></div><div id="task-results"></div></section>`;
   bindHeading();
   $('#search').oninput = event => { state.filter.search = event.target.value; updateFilters(); };
   for (const select of document.querySelectorAll('#filter-options select')) select.onchange = event => { state.filter[select.name] = event.target.value; updateFilters(); };
@@ -295,24 +314,27 @@ function renderList() {
   renderTaskResults();
 }
 function nextAction(task) {
-  if (task.assignee_id === state.user.id) {
-    if (task.status === 'new') return ['start', 'شروع کار', 'start'];
-    if (task.status === 'in_progress') return ['submit', 'ارسال نتیجه', 'send'];
+  if (standard(task) && task.assignee_id === state.user.id) {
+    if (task.status === 'new' && task.allowed_actions.includes('start') && !taskType(task).actions.start.noteRequired) return ['start', 'شروع کار', 'start'];
+    if (task.status === 'in_progress' && task.allowed_actions.includes('submit')) return ['submit', 'ارسال نتیجه', 'send'];
     if (task.status === 'changes_requested') return ['revise', 'دیدن دلیل اصلاح', 'revise'];
   }
-  if (task.reviewer_id === state.user.id && task.status === 'in_review') return ['review', 'بازبینی نتیجه', 'review'];
+  if (pendingReview(task)) return ['detail', 'بازبینی نتیجه', 'review'];
+  if (task.allowed_actions.length) return ['detail', 'دیدن قدم بعدی', 'flag'];
+  if (task.blocked_actions.length) return ['detail', 'دیدن دلیل توقف', 'flag'];
   return null;
 }
 function renderTaskResults() {
   const scope = state.view;
   const { search, status, assignee, reviewer } = state.filter;
   const term = normalizedTitle(search);
+  const matchStatus = task => !status || (Object.hasOwn(taskBuckets, status) ? taskBuckets[status].match(task) : task.status === status);
   const filterCount = [status, assignee, reviewer].filter(Boolean).length;
   const tasks = state.tasks.filter(task => {
     if (scope === 'mine' && task.assignee_id !== state.user.id) return false;
     if (scope === 'created' && task.creator_id !== state.user.id) return false;
-    if (scope === 'review' && (task.reviewer_id !== state.user.id || task.status !== 'in_review')) return false;
-    return (!term || normalizedTitle(task.title).includes(term)) && (!status || (status === 'open' ? task.status !== 'done' : task.status === status)) && (!assignee || task.assignee_id === assignee) && (!reviewer || task.reviewer_id === reviewer);
+    if (scope === 'review' && !pendingReview(task)) return false;
+    return (!term || normalizedTitle(task.title).includes(term)) && matchStatus(task) && (!assignee || task.assignee_id === assignee) && (!reviewer || task.reviewer_id === reviewer);
   });
   if (scope === 'dashboard') tasks.sort((a, b) => Number(Boolean(nextAction(b))) - Number(Boolean(nextAction(a))));
   $('#filter-count').hidden = !filterCount; $('#filter-count').textContent = faNumber(filterCount);
@@ -331,11 +353,11 @@ function renderTaskResults() {
     const next = nextAction(task);
     if (!next) return '';
     const [name, label, symbol] = next;
-    if (name === 'review' || name === 'revise') return `<a class="row-action button" href="#task/${task.id}" data-task="${task.id}">${icon(symbol)}${label}</a>`;
+    if (name === 'detail' || name === 'revise') return `<a class="row-action button" href="#task/${task.id}" data-task="${task.id}">${icon(symbol)}${label}</a>`;
     const busy = name === 'start' && pendingStarts.has(task.id);
     return `<button class="row-action" data-quick="${name}" data-task-id="${task.id}" ${busy ? 'disabled aria-busy="true"' : ''}>${icon(symbol)}${label}</button>`;
   };
-  $('#task-results').innerHTML = `<div class="table-scroll"><table><thead><tr><th scope="col">عنوان کار</th><th scope="col">وضعیت</th><th scope="col">انجام‌دهنده</th><th scope="col">مدیر پیگیری</th><th scope="col">مهلت انجام</th><th scope="col">قدم بعدی</th></tr></thead><tbody>${rows.map(task => `<tr><td>${link(task)}</td><td>${badge(task.status)}</td><td>${person(task.assignee_id)}</td><td>${person(task.reviewer_id)}</td><td>${due(task)}</td><td>${action(task)}</td></tr>`).join('')}</tbody></table></div><div class="mobile-cards">${rows.map(task => `<article class="mobile-card"><div class="mobile-card-head">${link(task)}${badge(task.status)}</div><div class="mobile-card-meta"><span>${person(task.assignee_id)}</span><span>${icon('calendar')}${due(task)}</span></div><div class="mobile-card-footer"><span>پیگیری: <bdi>${escapeHtml(userName(task.reviewer_id))}</bdi></span>${action(task)}</div></article>`).join('')}</div>${rows.length < tasks.length ? '<div class="list-footer"><button id="show-more">نمایش کارهای بیشتر</button></div>' : ''}`;
+  $('#task-results').innerHTML = `<div class="table-scroll"><table><thead><tr><th scope="col">عنوان کار</th><th scope="col">وضعیت</th><th scope="col">انجام‌دهنده</th><th scope="col">مدیر پیگیری</th><th scope="col">مهلت انجام</th><th scope="col">قدم بعدی</th></tr></thead><tbody>${rows.map(task => `<tr><td>${link(task)}</td><td>${badge(task)}</td><td>${person(task.assignee_id)}</td><td>${person(task.reviewer_id)}</td><td>${due(task)}</td><td>${action(task)}</td></tr>`).join('')}</tbody></table></div><div class="mobile-cards">${rows.map(task => `<article class="mobile-card"><div class="mobile-card-head">${link(task)}${badge(task)}</div><div class="mobile-card-meta"><span>${person(task.assignee_id)}</span><span>${icon('calendar')}${due(task)}</span></div><div class="mobile-card-footer"><span>پیگیری: <bdi>${escapeHtml(userName(task.reviewer_id))}</bdi></span>${action(task)}</div></article>`).join('')}</div>${rows.length < tasks.length ? '<div class="list-footer"><button id="show-more">نمایش کارهای بیشتر</button></div>' : ''}`;
   document.querySelectorAll('a[data-task]').forEach(anchor => anchor.onclick = openTaskLink);
   document.querySelectorAll('[data-quick]').forEach(button => button.onclick = () => {
     const task = state.tasks.find(row => row.id === button.dataset.taskId);
@@ -364,7 +386,8 @@ function openModal(title, content, bind) {
 function closeModal() { if ($('#modal').open) $('#modal').close(); $('#modal').innerHTML = ''; }
 function clearSession() {
   closeModal();
-  state.user = null; state.csrf = ''; state.tasks = []; state.users = []; state.directory = []; state.people.clear(); state.detail = null; pendingStarts.clear();
+  state.user = null; state.csrf = ''; state.tasks = []; state.taskTypes = {}; state.defaultType = '';
+  state.users = []; state.directory = []; state.people.clear(); state.detail = null; pendingStarts.clear();
 }
 function rememberTask(detail) {
   const { events, ...summary } = detail;
@@ -455,19 +478,47 @@ async function quickStart(task, button) {
     }
   }
 }
+function typeSelector(task) {
+  const types = Object.entries(state.taskTypes);
+  if (task || types.length < 2) return '';
+  return `<div class="field"><label for="task-type">نوع کار</label><select id="task-type" name="type">${types.map(([id, type]) =>
+    `<option value="${escapeHtml(id)}" ${id === state.defaultType ? 'selected' : ''}>${escapeHtml(type.label)}</option>`).join('')}</select></div>`;
+}
+function typeFields(type, values) {
+  return Object.entries(type.fields).map(([id, field]) => {
+    const name = `task-field-${escapeHtml(id)}`;
+    return `<div class="field"><label for="${name}">${escapeHtml(field.label)}</label><input id="${name}" name="${name}" dir="auto" maxlength="${field.maxLength}" ${field.required ? 'required' : ''} value="${escapeHtml(values[id] ?? '')}"></div>`;
+  }).join('');
+}
+function fieldSummary(task, separator) {
+  return Object.entries(task.fields).map(([id, value]) => {
+    const label = taskType(task)?.fields[id]?.label ?? id;
+    return `${escapeHtml(label)}: <bdi>${escapeHtml(value)}</bdi>`;
+  }).join(separator);
+}
 function taskModal(task) {
   const editing = !!task;
   const users = state.users.filter(user => user.active);
-  openModal(editing ? 'ویرایش اطلاعات کار' : 'کار جدید', `<form id="task-form" autocomplete="off"><div class="field"><label for="task-title">عنوان کار</label><input id="task-title" name="title" dir="auto" required maxlength="200" placeholder="مثلا: آماده‌سازی گزارش ماهانه" value="${escapeHtml(task?.title || '')}"></div><div class="field"><label for="description">توضیح کار و نتیجه مورد انتظار</label><textarea id="description" name="description" dir="auto" required maxlength="10000" placeholder="چه کاری باید انجام شود و نتیجه قابل قبول چیست؟">${escapeHtml(task?.description || '')}</textarea></div><div class="form-grid"><div class="field"><label for="assignee">انجام‌دهنده</label><select id="assignee" name="assignee_id" required>${optionUsers(task?.assignee_id, 'انتخاب انجام‌دهنده')}</select></div><div class="field"><label for="reviewer">مدیر پیگیری</label><select id="reviewer" name="reviewer_id" required>${optionUsers(task?.reviewer_id, 'انتخاب مدیر پیگیری')}</select></div><div class="field span-2"><label for="due-date">مهلت انجام (اختیاری)</label><input class="ltr" type="date" id="due-date" name="due_date" value="${escapeHtml(task?.due_date || '')}"><small>ورود تاریخ میلادی است؛ تاریخ‌ها در فهرست به تقویم فارسی نمایش داده می‌شوند.</small></div></div>${users.length < 2 ? '<div class="notice">ابتدا مدیر سیستم باید حداقل دو حساب فعال ایجاد کند.</div>' : ''}<div class="form-actions"><button type="button" id="cancel-task">انصراف</button><button type="submit" class="primary" ${users.length < 2 ? 'disabled' : ''}>${editing ? 'ذخیره تغییرات' : 'ایجاد کار'}</button></div></form>`, () => {
+  const typeId = () => task?.type ?? $('#task-type')?.value ?? state.defaultType;
+  openModal(editing ? 'ویرایش اطلاعات کار' : 'کار جدید', `<form id="task-form" autocomplete="off">${typeSelector(task)}<div class="field"><label for="task-title">عنوان کار</label><input id="task-title" name="title" dir="auto" required maxlength="200" placeholder="مثلا: آماده‌سازی گزارش ماهانه" value="${escapeHtml(task?.title || '')}"></div><div class="field"><label for="description">توضیح کار و نتیجه مورد انتظار</label><textarea id="description" name="description" dir="auto" required maxlength="10000" placeholder="چه کاری باید انجام شود و نتیجه قابل قبول چیست؟">${escapeHtml(task?.description || '')}</textarea></div><div class="form-grid"><div class="field"><label for="assignee">انجام‌دهنده</label><select id="assignee" name="assignee_id" required>${optionUsers(task?.assignee_id, 'انتخاب انجام‌دهنده')}</select></div><div class="field"><label for="reviewer">مدیر پیگیری</label><select id="reviewer" name="reviewer_id" required>${optionUsers(task?.reviewer_id, 'انتخاب مدیر پیگیری')}</select></div><div class="field span-2"><label for="due-date">مهلت انجام (اختیاری)</label><input class="ltr" type="date" id="due-date" name="due_date" value="${escapeHtml(task?.due_date || '')}"><small>ورود تاریخ میلادی است؛ تاریخ‌ها در فهرست به تقویم فارسی نمایش داده می‌شوند.</small></div></div><div id="task-fields"></div>${users.length < 2 ? '<div class="notice">ابتدا مدیر سیستم باید حداقل دو حساب فعال ایجاد کند.</div>' : ''}<div class="form-actions"><button type="button" id="cancel-task">انصراف</button><button type="submit" class="primary" ${users.length < 2 ? 'disabled' : ''}>${editing ? 'ذخیره تغییرات' : 'ایجاد کار'}</button></div></form>`, () => {
     $('#cancel-task').onclick = closeModal;
+    const fields = $('#task-fields');
+    const renderFields = () => { fields.innerHTML = typeFields(state.taskTypes[typeId()], task?.fields ?? {}); };
+    renderFields();
+    $('#task-type')?.addEventListener('change', renderFields);
     $('#task-form').onsubmit = event => {
       event.preventDefault();
       const form = event.currentTarget;
       const save = taskSaveContext(form, editing);
       submitForm(form, async values => {
         if (values.assignee_id === values.reviewer_id) throw new Error('انجام‌دهنده و مدیر پیگیری باید متفاوت باشند.');
+        const type = typeId();
+        const fields = Object.fromEntries(Object.keys(state.taskTypes[type].fields).map(id => [id, values[`task-field-${id}`]]));
         try {
-          const result = await api(task ? `/tasks/${task.id}` : '/tasks', { method: editing ? 'PATCH' : 'POST', body: { ...values, ...(editing ? { version: task.version } : {}) } });
+          const { title, description, assignee_id, reviewer_id, due_date } = values;
+          const result = await api(task ? `/tasks/${task.id}` : '/tasks', { method: editing ? 'PATCH' : 'POST',
+            body: { title, description, assignee_id, reviewer_id, due_date, type, fields, ...(editing ? { version: task.version } : {}) }
+          });
           await finishTaskSave(save, result, editing ? 'تغییرات ذخیره شد.' : 'کار جدید ساخته شد.');
         } catch (error) { if (error.status === 409) await refreshConflict(task?.id); throw error; }
       });
@@ -482,41 +533,48 @@ async function refreshConflict(id) {
   if (!id || !owner || !current()) return;
   try {
     const detail = await api(`/tasks/${id}`);
-    if (!current() || detail.version === state.detail?.version || !rememberTask(detail)) return;
+    if (!current() || !rememberTask(detail)) return;
+    const versionChanged = detail.version !== state.detail?.version;
     state.detail = detail;
     renderDetail();
-    toast('نسخه تازه دریافت شد. نوشته خود را نگه دارید، پنجره را ببندید و دوباره اقدام کنید.');
+    if (versionChanged) toast('نسخه تازه دریافت شد. نوشته خود را نگه دارید، پنجره را ببندید و دوباره اقدام کنید.');
   } catch {
     if (current()) toast('دریافت نسخه تازه ممکن نشد. نوشته شما در فرم باقی مانده است.');
   }
 }
 function renderDetail() {
   const task = state.detail;
-  const editable = (task.creator_id === state.user.id || state.user.admin) && !['in_review', 'done'].includes(task.status);
-  const isAssignee = task.assignee_id === state.user.id;
-  const isReviewer = task.reviewer_id === state.user.id;
-  let allowed = [];
-  if (isAssignee && ['new', 'changes_requested'].includes(task.status)) allowed.push(['start', task.status === 'new' ? 'شروع کار' : 'شروع اصلاحات']);
-  if (isAssignee && ['in_progress', 'changes_requested'].includes(task.status)) allowed.push(['submit', 'ارسال نتیجه برای بازبینی']);
-  if (isReviewer && task.status === 'in_review') allowed = [['approve', 'تایید و تکمیل کار'], ['request_changes', 'برگشت برای اصلاح']];
-  const latestFeedback = task.events.find(event => event.action === 'request_changes');
-  const latestResult = task.events.find(event => event.action === 'submit');
+  const type = taskType(task);
+  const status = taskStatus(task);
+  const editable = task.can_edit;
+  const allowed = task.allowed_actions.map(action => [action, standard(task) && action === 'start' && task.status === 'changes_requested'
+    ? 'شروع اصلاحات' : type.actions[action].label]);
+  const latestFeedback = standard(task) && task.events.find(event => event.action === 'request_changes');
+  const latestResult = standard(task) && task.events.find(event => event.action === 'submit');
   const feedback = latestFeedback && (task.status === 'changes_requested' || (task.status === 'in_progress' && latestFeedback.id > (latestResult?.id || 0)));
   const note = feedback ? latestFeedback : ['in_review', 'done'].includes(task.status) ? latestResult : null;
   const noteTitle = feedback ? 'چه چیزی نیاز به اصلاح دارد؟' : 'آخرین نتیجه ارسال‌شده';
-  const actionButtons = allowed.map(([action, label], index) => `<button class="${action === 'request_changes' ? 'danger' : index === 0 ? 'primary' : ''}" data-action="${action}">${icon({ start: 'start', submit: 'send', approve: 'check', request_changes: 'revise' }[action])}${label}</button>`).join('');
-  const locked = ['in_review', 'done'].includes(task.status);
-  const next = note || allowed.length ? `<section class="detail-card action-card ${feedback ? 'feedback' : ''}"><div class="section-head"><h2>${note ? noteTitle : 'قدم بعدی شما'}</h2><span class="section-icon">${icon(feedback ? 'revise' : note ? 'review' : 'flag')}</span></div>${note ? `<div class="description" dir="auto">${escapeHtml(note.note)}</div><p class="note-byline"><bdi>${escapeHtml(note.actor_name)}</bdi> / ${time(note.created_at)}</p>` : `<p>${task.status === 'new' ? 'با شروع کار، وضعیت آن برای همکاران به‌روز می‌شود.' : 'نتیجه را بنویسید تا مدیر پیگیری بتواند آن را بررسی کند.'}</p>`}${actionButtons ? `<div class="action-buttons">${actionButtons}</div>` : ''}</section>` : '';
-  $('#main').innerHTML = `<a class="back" id="back" href="${escapeHtml(returnHash())}">${icon('back')}بازگشت به کارها</a><div class="page-heading detail-heading"><div><div class="detail-status">${badge(task.status)}${locked ? `<span class="locked" title="اطلاعات این کار فقط خواندنی است" aria-label="فقط خواندنی">${icon('lock')}</span>` : ''}</div><h1 id="detail-title" tabindex="-1"><bdi>${escapeHtml(task.title)}</bdi></h1><p>آخرین تغییر: ${time(task.updated_at)}</p></div>${headingActions()}</div><div class="detail-layout"><div class="detail-main">${next}<section class="detail-card"><div class="section-head"><h2>درباره این کار</h2>${editable ? `<button id="edit-task" class="small">${icon('edit')}ویرایش اطلاعات</button>` : ''}</div><div class="description" dir="auto">${escapeHtml(task.description)}</div></section><section class="detail-card"><div class="section-head"><h2>مسیر این کار</h2><span class="section-icon">${icon('clock')}</span></div><ol class="timeline">${task.events.map(event => `<li><div class="event-title"><bdi>${escapeHtml(event.actor_name)}</bdi> ${actions[event.action]}</div><div class="event-time">${time(event.created_at)} / نسخه ${faNumber(event.snapshot.version)}</div>${event.note ? `<div class="event-note" dir="auto">${escapeHtml(event.note)}</div>` : ''}<details><summary>اطلاعات کار در این مرحله</summary><div class="snapshot">${escapeHtml(event.snapshot.title)}<br>${escapeHtml(event.snapshot.description)}<br>انجام‌دهنده: ${escapeHtml(userName(event.snapshot.assignee_id))}<br>مدیر پیگیری: ${escapeHtml(userName(event.snapshot.reviewer_id))}<br>وضعیت: ${states[event.snapshot.status]}<br>مهلت: ${date(event.snapshot.due_date)}</div></details></li>`).join('')}</ol></section></div><aside class="detail-side"><section class="detail-card"><div class="section-head"><h2>مشخصات کار</h2></div><dl class="meta-list"><dt>انجام‌دهنده</dt><dd>${person(task.assignee_id)}</dd><dt>مدیر پیگیری</dt><dd>${person(task.reviewer_id)}</dd><dt>سازنده</dt><dd><bdi>${escapeHtml(userName(task.creator_id))}</bdi></dd><dt>مهلت انجام</dt><dd class="${overdue(task) ? 'overdue' : ''}">${date(task.due_date)}${overdue(task) ? ' / مهلت گذشته' : ''}</dd><dt>تاریخ ایجاد</dt><dd>${date(task.created_at)}</dd><dt>نسخه</dt><dd>${faNumber(task.version)}</dd></dl></section>${locked ? `<p class="detail-lock">${icon('lock')}${task.status === 'done' ? 'کار تایید و تکمیل شده و فقط خواندنی است.' : 'اطلاعات کار تا تصمیم مدیر پیگیری قابل تغییر نیست.'}</p>` : ''}</aside></div>`;
+  const actionButtons = allowed.map(([action, label], index) => `<button class="${action === 'request_changes' ? 'danger' : index === 0 ? 'primary' : ''}" data-action="${escapeHtml(action)}">${icon({ start: 'start', submit: 'send', approve: 'check', request_changes: 'revise' }[action] || 'flag')}${escapeHtml(label)}</button>`).join('');
+  const locked = status.locked || status.review || status.terminal;
+  const fields = fieldSummary(task, '<br>');
+  const blockedMessages = [...new Set(task.blocked_actions.map(action => action.message))];
+  const actionHint = standard(task) && allowed.length
+    ? `<p>${task.status === 'new' ? 'با شروع کار، وضعیت آن برای همکاران به‌روز می‌شود.' : 'نتیجه را بنویسید تا مدیر پیگیری بتواند آن را بررسی کند.'}</p>`
+    : '';
+  const next = note || allowed.length || blockedMessages.length ? `<section class="detail-card action-card ${feedback ? 'feedback' : ''}"><div class="section-head"><h2>${note ? noteTitle : allowed.length ? 'قدم بعدی شما' : 'مانع انجام کار'}</h2><span class="section-icon">${icon(feedback ? 'revise' : note ? 'review' : 'flag')}</span></div>${note ? `<div class="description" dir="auto">${escapeHtml(note.note)}</div><p class="note-byline"><bdi>${escapeHtml(note.actor_name)}</bdi> / ${time(note.created_at)}</p>` : actionHint}${blockedMessages.map(message => `<p class="notice">${escapeHtml(message)}</p>`).join('')}${actionButtons ? `<div class="action-buttons">${actionButtons}</div>` : ''}</section>` : '';
+  $('#main').innerHTML = `<a class="back" id="back" href="${escapeHtml(returnHash())}">${icon('back')}بازگشت به کارها</a><div class="page-heading detail-heading"><div><div class="detail-status">${badge(task)}${locked ? `<span class="locked" title="اطلاعات این کار فقط خواندنی است" aria-label="فقط خواندنی">${icon('lock')}</span>` : ''}</div><h1 id="detail-title" tabindex="-1"><bdi>${escapeHtml(task.title)}</bdi></h1><p>آخرین تغییر: ${time(task.updated_at)}</p></div>${headingActions()}</div><div class="detail-layout"><div class="detail-main">${next}<section class="detail-card"><div class="section-head"><h2>درباره این کار</h2>${editable ? `<button id="edit-task" class="small">${icon('edit')}ویرایش اطلاعات</button>` : ''}</div><div class="description" dir="auto">${escapeHtml(task.description)}</div>${fields ? `<p>${fields}</p>` : ''}</section><section class="detail-card"><div class="section-head"><h2>مسیر این کار</h2><span class="section-icon">${icon('clock')}</span></div><ol class="timeline">${task.events.map(event => `<li><div class="event-title"><bdi>${escapeHtml(event.actor_name)}</bdi> ${escapeHtml(historyActions[event.action] ?? taskType(event.snapshot)?.actions[event.action]?.eventLabel ?? event.action)}</div><div class="event-time">${time(event.created_at)} / نسخه ${faNumber(event.snapshot.version)}</div>${event.note ? `<div class="event-note" dir="auto">${escapeHtml(event.note)}</div>` : ''}<details><summary>اطلاعات کار در این مرحله</summary><div class="snapshot">${escapeHtml(event.snapshot.title)}<br>${escapeHtml(event.snapshot.description)}<br>انجام‌دهنده: ${escapeHtml(userName(event.snapshot.assignee_id))}<br>مدیر پیگیری: ${escapeHtml(userName(event.snapshot.reviewer_id))}<br>وضعیت: ${escapeHtml(taskStatus(event.snapshot)?.label ?? event.snapshot.status)}<br>مهلت: ${date(event.snapshot.due_date)}${Object.keys(event.snapshot.fields).length ? `<br>${fieldSummary(event.snapshot, '<br>')}` : ''}</div></details></li>`).join('')}</ol></section></div><aside class="detail-side"><section class="detail-card"><div class="section-head"><h2>مشخصات کار</h2></div><dl class="meta-list">${standard(task) ? '' : `<dt>نوع کار</dt><dd>${escapeHtml(type.label)}</dd>`}<dt>انجام‌دهنده</dt><dd>${person(task.assignee_id)}</dd><dt>مدیر پیگیری</dt><dd>${person(task.reviewer_id)}</dd><dt>سازنده</dt><dd><bdi>${escapeHtml(userName(task.creator_id))}</bdi></dd><dt>مهلت انجام</dt><dd class="${overdue(task) ? 'overdue' : ''}">${date(task.due_date)}${overdue(task) ? ' / مهلت گذشته' : ''}</dd><dt>تاریخ ایجاد</dt><dd>${date(task.created_at)}</dd><dt>نسخه</dt><dd>${faNumber(task.version)}</dd></dl></section>${locked ? `<p class="detail-lock">${icon('lock')}${status.terminal ? 'کار تکمیل شده و فقط خواندنی است.' : status.review ? 'اطلاعات کار تا تصمیم مدیر پیگیری قابل تغییر نیست.' : 'اطلاعات این کار فقط خواندنی است.'}</p>` : ''}</aside></div>`;
   bindHeading(); bindBack();
   $('#edit-task')?.addEventListener('click', () => taskModal(task));
   document.querySelectorAll('[data-action]').forEach(button => button.onclick = () => actionModal(task, button.dataset.action));
 }
 function actionModal(task, action, inList = false) {
+  const rule = taskType(task).actions[action];
   const titles = { start: 'شروع انجام کار', submit: 'ارسال نتیجه برای بازبینی', approve: 'تایید نهایی نتیجه', request_changes: 'درخواست اصلاح' };
-  const required = ['submit', 'request_changes'].includes(action);
-  const label = action === 'request_changes' ? 'چه چیزی باید اصلاح شود؟' : action === 'submit' ? 'نتیجه انجام کار' : 'توضیح (اختیاری)';
-  openModal(titles[action], `<form id="action-form" autocomplete="off"><p class="form-context"><bdi>${escapeHtml(task.title)}</bdi></p>${action === 'approve' ? '<div class="notice">با تایید شما کار تکمیل می‌شود و قابل بازگشایی نیست.</div>' : ''}<div class="field"><label for="action-note">${label}</label><textarea id="action-note" name="note" dir="auto" maxlength="10000" ${required ? 'required' : ''}></textarea></div><div class="form-actions"><button type="button" id="cancel-action">انصراف</button><button type="submit" class="${action === 'request_changes' ? 'danger' : 'primary'}">${titles[action]}</button></div></form>`, () => {
+  const title = escapeHtml((standard(task) && titles[action]) || rule.label);
+  const required = rule.noteRequired;
+  const label = standard(task) && action === 'request_changes' ? 'چه چیزی باید اصلاح شود؟' :
+    standard(task) && action === 'submit' ? 'نتیجه انجام کار' : required ? 'توضیح' : 'توضیح (اختیاری)';
+  openModal(title, `<form id="action-form" autocomplete="off"><p class="form-context"><bdi>${escapeHtml(task.title)}</bdi></p>${standard(task) && action === 'approve' ? '<div class="notice">با تایید شما کار تکمیل می‌شود و قابل بازگشایی نیست.</div>' : ''}<div class="field"><label for="action-note">${label}</label><textarea id="action-note" name="note" dir="auto" maxlength="10000" ${required ? 'required' : ''}></textarea></div><div class="form-actions"><button type="button" id="cancel-action">انصراف</button><button type="submit" class="${action === 'request_changes' ? 'danger' : 'primary'}">${title}</button></div></form>`, () => {
     $('#cancel-action').onclick = closeModal;
     $('#action-form').onsubmit = event => {
       event.preventDefault();
@@ -525,7 +583,8 @@ function actionModal(task, action, inList = false) {
       submitForm(form, async values => {
         try {
           const result = await api(`/tasks/${task.id}/actions`, { method: 'POST', body: { action, note: values.note, version: task.version } });
-          const message = { start: 'کار شروع شد.', submit: 'نتیجه برای بازبینی فرستاده شد.', approve: 'کار تایید و تکمیل شد.', request_changes: 'کار برای اصلاح برگشت داده شد.' }[action];
+          const messages = { start: 'کار شروع شد.', submit: 'نتیجه برای بازبینی فرستاده شد.', approve: 'کار تایید و تکمیل شد.', request_changes: 'کار برای اصلاح برگشت داده شد.' };
+          const message = (standard(task) && messages[action]) || 'اقدام ثبت شد.';
           await finishTaskSave(save, result, message);
         } catch (error) {
           if (inList && [404, 409].includes(error.status)) await refreshListConflict(task.id, save.owner);

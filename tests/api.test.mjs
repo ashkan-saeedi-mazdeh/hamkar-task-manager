@@ -8,6 +8,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createApp } from '../server.mjs';
 import { hashPassword } from '../lib/store.mjs';
 import { request as httpRequest } from 'node:http';
+import { testTaskTypes } from './fixtures/task-types.mjs';
 
 const newPassword = () => randomBytes(24).toString('base64url');
 function request(url, options = {}) {
@@ -26,13 +27,13 @@ function request(url, options = {}) {
     req.end(options.body);
   });
 }
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const folder = await mkdtemp(join(tmpdir(), 'taskmanager-test-'));
   const dbPath = join(folder, 'test.sqlite');
   let app;
   let base;
   async function start() {
-    app = createApp({ dbPath });
+    app = createApp({ dbPath, ...options });
     app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening');
     base = `http://127.0.0.1:${app.server.address().port}`;
   }
@@ -76,6 +77,135 @@ async function fixture(t) {
   }
   return { admin, adminPassword, worker, reviewer, stranger, client, addUser, task, act, get store() { return app.store; }, restart: async () => { await stop(); await start(); }, get base() { return base; } };
 }
+
+function mobile(f, accessToken) {
+  return async (path, method = 'GET', body, extras = {}) => {
+    const headers = { ...extras };
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const response = await request(`${f.base}/api/v1${path}`, {
+      method, headers, body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    return { ...response, value: response.text ? await response.json() : null };
+  };
+}
+
+async function mobileSignIn(f, username, password) {
+  const signedIn = await mobile(f)('/session', 'POST', { username, password });
+  assert.equal(signedIn.status, 200);
+  assert.equal(signedIn.headers.get('set-cookie'), null);
+  assert.equal(signedIn.headers.get('cache-control'), 'no-store');
+  assert.equal(signedIn.value.token_type, 'Bearer');
+  assert.ok(Date.parse(signedIn.value.expires_at) > Date.now());
+  assert.match(signedIn.value.access_token, /^tm_[A-Za-z0-9_-]{43}$/);
+  return mobile(f, signedIn.value.access_token);
+}
+
+test('REST sessions use bearer credentials, survive restart, and support logout and account revocation', async t => {
+  const f = await fixture(t);
+  const anonymous = mobile(f);
+  const worker = await mobileSignIn(f, 'worker', f.worker.password);
+  assert.equal((await anonymous('/session', 'POST', { username: 'worker', password: f.worker.password }, { Origin: f.base })).status, 403);
+  const cookie = f.worker.account.cookie;
+  const cookieToken = cookie.split('=')[1];
+  const missing = await anonymous('/session', 'GET', undefined, { Cookie: cookie, Authorization: `Bearer ${cookieToken}` });
+  assert.equal(missing.status, 401);
+  assert.equal(missing.value.code, 'unauthorized');
+  assert.equal(missing.headers.get('www-authenticate'), 'Bearer');
+  const second = await anonymous('/session', 'POST', { username: 'worker', password: f.worker.password });
+  assert.equal(second.status, 200);
+  assert.equal((await f.client().request('/tasks', 'GET', undefined, { Cookie: `taskmanager=${second.value.access_token}` })).status, 401);
+  await f.restart();
+  assert.deepEqual((await worker('/session')).value, { user: f.worker.user });
+  assert.equal((await worker('/session', 'DELETE')).status, 204);
+  assert.equal((await worker('/session')).status, 401);
+  assert.equal((await f.worker.account.request('/tasks')).status, 200);
+  const workerPhone = mobile(f, second.value.access_token);
+  assert.equal((await workerPhone('/session')).status, 200);
+  await f.admin.request(`/users/${f.worker.user.id}/password`, 'POST', { version: 1, password: newPassword() });
+  assert.equal((await workerPhone('/session')).status, 401);
+});
+
+test('REST tasks expose permissions, partial edits, and paged filter results within the visible scope', async t => {
+  const f = await fixture(t);
+  const admin = await mobileSignIn(f, 'admin', f.adminPassword);
+  const worker = await mobileSignIn(f, 'worker', f.worker.password);
+  const reviewer = await mobileSignIn(f, 'reviewer', f.reviewer.password);
+  const created = await admin('/tasks', 'POST', {
+    title: 'First task', description: 'Write the report', assignee_id: f.worker.user.id,
+    reviewer_id: f.reviewer.user.id, due_date: '2026-12-20'
+  });
+  assert.equal(created.status, 201);
+  const first = created.value;
+  assert.equal(created.headers.get('location'), `/api/v1/tasks/${first.id}`);
+  assert.equal(first.type, 'standard');
+  assert.deepEqual(first.fields, {});
+  assert.deepEqual(first.allowed_actions, []);
+  const taskPath = `/tasks/${first.id}`;
+  assert.deepEqual((await worker(taskPath)).value.allowed_actions, ['start']);
+  assert.equal((await worker(taskPath, 'PATCH', { version: 1, title: 'Wrong editor' })).status, 403);
+  const edited = (await admin(taskPath, 'PATCH', { version: 1, title: 'Updated report' })).value;
+  assert.equal(edited.title, 'Updated report');
+  assert.equal(edited.due_date, first.due_date);
+  assert.equal(edited.description, first.description);
+  assert.equal((await admin(taskPath, 'PATCH', { version: 1, title: 'Lost update' })).value.code, 'stale_version');
+  assert.equal((await worker(`${taskPath}/actions`, 'POST', { version: 2, action: 'start' })).status, 200);
+  assert.equal((await worker(`${taskPath}/actions`, 'POST', { version: 3, action: 'submit', note: 'Result' })).status, 200);
+  assert.equal((await admin(taskPath, 'PATCH', { version: 4, title: 'Frozen' })).value.code, 'task_locked');
+  assert.equal((await admin(`${taskPath}/actions`, 'POST', { version: 4, action: 'approve' })).status, 403);
+  assert.equal((await reviewer(`${taskPath}/actions`, 'POST', { version: 4, action: 'approve' })).status, 200);
+  assert.deepEqual((await worker('/tasks?scope=assigned&status=done')).value.tasks.map(task => task.id), [first.id]);
+
+  const second = await f.task(f.admin, { title: 'Second task' });
+  await f.task(f.admin, { title: 'Private task', assignee_id: f.stranger.user.id });
+  assert.deepEqual((await worker('/tasks?scope=created')).value, { tasks: [], next_cursor: null });
+  const page = (await worker('/tasks?limit=1&type=standard')).value;
+  assert.deepEqual(page.tasks.map(task => task.id), [second.id]);
+  assert.ok(page.next_cursor);
+  const last = (await worker(`/tasks?limit=1&type=standard&cursor=${page.next_cursor}`)).value;
+  assert.deepEqual(last.tasks.map(task => task.id), [first.id]);
+  assert.equal(last.next_cursor, null);
+  assert.equal((await worker('/tasks?cursor=invalid')).value.code, 'invalid_cursor');
+  for (const query of ['limit=101', 'limit=00', 'scope=all', 'status=unknown']) {
+    assert.equal((await worker(`/tasks?${query}`)).status, 400);
+  }
+});
+
+test('a registered task type has its own fields, states, permissions and immutable snapshots', async t => {
+  const f = await fixture(t, { taskTypes: testTaskTypes });
+  const admin = await mobileSignIn(f, 'admin', f.adminPassword);
+  const worker = await mobileSignIn(f, 'worker', f.worker.password);
+  const input = {
+    type: 'delivery', title: 'Send package', description: 'Drop off today',
+    assignee_id: f.worker.user.id, reviewer_id: f.reviewer.user.id
+  };
+  assert.equal((await admin('/task-types')).value.task_types.delivery.actions.deliver.to, 'delivered');
+  assert.equal((await admin('/tasks', 'POST', { ...input, type: 'constructor' })).value.code, 'invalid_task_type');
+  for (const fields of [{}, null, { tracking: 'X'.repeat(31) }, { tracking: 'ABC', extra: 'Invalid' }]) {
+    assert.equal((await admin('/tasks', 'POST', { ...input, fields })).status, 400);
+  }
+  const created = await admin('/tasks', 'POST', { ...input, fields: { tracking: '  ABC  ', destination: 'Front desk' } });
+  assert.equal(created.status, 201);
+  assert.equal(created.value.status, 'awaiting_delivery');
+  const taskPath = `/tasks/${created.value.id}`;
+  assert.equal((await admin(taskPath, 'PATCH', { version: 1, type: 'standard' })).value.code, 'immutable_task_type');
+  const edited = await admin(taskPath, 'PATCH', { version: 1, fields: { tracking: 'DEF' } });
+  assert.equal(edited.status, 200);
+  assert.deepEqual(edited.value.fields, { tracking: 'DEF' });
+  assert.deepEqual(edited.value.events[1].snapshot.fields, { tracking: 'ABC', destination: 'Front desk' });
+  await f.restart();
+  assert.deepEqual((await worker(taskPath)).value.allowed_actions, ['deliver']);
+  assert.equal((await worker(`${taskPath}/actions`, 'POST', { version: 2, action: 'start' })).status, 400);
+  assert.equal((await worker(`${taskPath}/actions`, 'POST', { version: 2, action: 'deliver' })).status, 400);
+  const done = await worker(`${taskPath}/actions`, 'POST', { version: 2, action: 'deliver', note: 'Signed for' });
+  assert.equal(done.status, 200);
+  assert.equal(done.value.status, 'delivered');
+  assert.equal(done.value.events[0].note, 'Signed for');
+  assert.deepEqual(done.value.allowed_actions, []);
+  assert.equal((await admin(taskPath, 'PATCH', { version: 3, title: 'Frozen' })).value.code, 'task_locked');
+  assert.equal((await admin('/tasks?type=delivery&status=done')).status, 400);
+  assert.deepEqual((await admin('/tasks?type=delivery&status=delivered')).value.tasks.map(task => task.id), [created.value.id]);
+});
 
 test('complete review and repeated revision cycle preserves every result and snapshot', { timeout: 20000 }, async t => {
   const f = await fixture(t);

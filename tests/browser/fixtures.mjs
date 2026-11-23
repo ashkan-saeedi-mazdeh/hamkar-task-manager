@@ -6,8 +6,9 @@ import { createApp } from '../../server.mjs';
 export const newPassword = () => randomBytes(24).toString('base64url');
 
 export const test = base.extend({
-  app: async ({}, use) => {
-    const { server, store } = createApp({ dbPath: ':memory:' });
+  taskTypes: [undefined, { option: true }],
+  app: async ({ taskTypes }, use) => {
+    const { server, store } = createApp({ dbPath: ':memory:', taskTypes });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     const url = `http://127.0.0.1:${server.address().port}`;

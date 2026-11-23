@@ -84,11 +84,19 @@ Anyone can change their own password from Account by entering their current pass
 changes end all sessions for that user, so sign in again afterward. Password recovery goes through
 an administrator. There is no public registration or email reset flow.
 
-Sessions last 12 hours. Passwords are stored as salted scrypt hashes; session tokens are random,
-stored as hashes and sent in HttpOnly, SameSite=Strict cookies. HTTPS uses Secure cookies.
+Sessions last 12 hours. Passwords are stored as salted scrypt hashes. Session tokens are random
+and stored as hashes. The browser uses HttpOnly, SameSite=Strict cookies, with Secure on HTTPS.
 Mutations require the session's CSRF token and a same-origin request. Login attempts are limited
 per account and connection address for 15 minutes. Behind Caddy the connection limit is shared
 by all users, with 30 attempts per 15 minutes, so use this version for a small team.
+
+## Mobile API and task types
+
+Native clients can sign in and work with tasks through the [versioned REST API](docs/rest-api.md).
+The browser and native apps use the same task permissions, workflow and history.
+
+See [task types](docs/task-types.md) to add a kind of task with its own fields and workflow or
+change the existing one.
 
 ## Run the tests
 

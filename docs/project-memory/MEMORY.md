@@ -75,3 +75,22 @@ search and viewport changes, and that its delayed response cannot restore access
 reassignment. The comparison viewer loaded all 24 images at matching dimensions, switched
 between scenes and phases, fit a phone viewport, and raised no browser errors. Physical-phone
 testing and public deployment were outside this work.
+
+## Task types and native REST API, 2026-11-23
+
+Task types now declare fields, statuses and allowed transitions in `lib/task-types.mjs`.
+The browser reads that catalog and uses server-computed actions and edit permissions.
+SQLite schema version 2 preserves existing tasks as `standard`, with their assignments,
+versions, sessions and stored event snapshots intact. A second type in the test fixture
+exercises custom fields and a different workflow through the browser and API.
+
+`/api/v1` signs native clients in with bearer tokens and provides task discovery, filtered
+pages, partial edits, workflow actions and account routes. It shares authorization, history,
+version checks and revocation with the web app. See [the API contract](../rest-api.md) and
+[the task type guide](../task-types.md).
+
+An independent agent reviewed the implementation and verified migration from the previous
+store. The review led to stricter definition checks, dashboard support for custom statuses,
+and a browser fix for a reviewer becoming inactive while a task is open. The final local
+`npm run verify` passed syntax checks, 38 Node tests and 24 Chromium tests. Tests used isolated
+databases. This change did not run against the live local database or a native mobile app.

@@ -2,7 +2,9 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Store, AppError, requireThat, publicUser, hashPassword, verifyPassword, token } from './lib/store.mjs';
+import { Store, publicUser, hashPassword, verifyPassword, token } from './lib/store.mjs';
+import { taskResponse } from './lib/task-api.mjs';
+import { AppError, field, requireThat, version } from './lib/validation.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const MAX_BODY = 64 * 1024;
@@ -13,13 +15,12 @@ const assets = {
   '/vazirmatn.woff2': ['vazirmatn.woff2', 'font/woff2']
 };
 const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
+const errorCodes = {
+  400: 'invalid_request', 401: 'unauthorized', 403: 'forbidden', 404: 'not_found',
+  405: 'method_not_allowed', 409: 'conflict', 413: 'body_too_large', 415: 'unsupported_media_type',
+  429: 'rate_limited', 500: 'internal_error'
+};
 
-function field(value, label, max, min = 1) {
-  requireThat(typeof value === 'string', 400, `${label} را وارد کنید.`);
-  value = value.trim();
-  requireThat(value.length >= min && value.length <= max, 400, `${label} باید بین ${min} و ${max} نویسه باشد.`);
-  return value;
-}
 function password(value) {
   requireThat(typeof value === 'string' && value.length >= 12 && value.length <= 128, 400, 'رمز عبور باید بین ۱۲ و ۱۲۸ نویسه باشد.');
   return value;
@@ -33,15 +34,8 @@ function username(value) {
   requireThat(/^[a-z0-9][a-z0-9._-]+$/.test(value), 400, 'نام کاربری را با حروف انگلیسی، عدد، نقطه، خط تیره یا زیرخط وارد کنید.');
   return value;
 }
-function version(value) { requireThat(Number.isSafeInteger(value) && value > 0, 400, 'نسخه رکورد نامعتبر است.'); return value; }
-function taskInput(body) {
-  const due = body.due_date === '' ? null : (body.due_date ?? null);
-  if (due !== null) requireThat(typeof due === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(due) && Number.isFinite(Date.parse(due)) && new Date(due).toISOString().slice(0, 10) === due, 400, 'مهلت انجام نامعتبر است.');
-  return { title: field(body.title, 'عنوان', 200), description: field(body.description, 'توضیح کار', 10000),
-    assignee_id: field(body.assignee_id, 'انجام‌دهنده', 64), reviewer_id: field(body.reviewer_id, 'مدیر پیگیری', 64), due_date: due };
-}
 async function bodyOf(req) {
-  requireThat(req.headers['content-type']?.split(';')[0] === 'application/json', 415, 'درخواست باید JSON باشد.');
+  requireThat(req.headers['content-type']?.split(';')[0].trim().toLowerCase() === 'application/json', 415, 'درخواست باید JSON باشد.');
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
@@ -56,10 +50,10 @@ async function bodyOf(req) {
   } catch (error) { if (error instanceof AppError) throw error; throw new AppError(400, 'درخواست JSON نامعتبر است.'); }
 }
 
-export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), origin = '', production = false } = {}) {
+export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), origin = '', production = false, taskTypes } = {}) {
   if (production && !origin.startsWith('https://')) throw new Error('Production requires APP_ORIGIN=https://your-domain');
   if (origin && new URL(origin).origin !== origin) throw new Error('APP_ORIGIN must contain only scheme and host, without a trailing slash');
-  const store = new Store(dbPath);
+  const store = new Store(dbPath, taskTypes);
   const attempts = new Map();
   const dummyHash = hashPassword(token());
   const secure = origin.startsWith('https://');
@@ -89,11 +83,14 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
     if (secure) headers['Strict-Transport-Security'] = 'max-age=31536000';
     for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
     const json = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); };
+    let native = false;
     try {
+      const url = new URL(req.url, 'http://localhost');
+      native = url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/');
       const host = req.headers.host || '';
       if (origin) requireThat(host === new URL(origin).host, 403, 'آدرس درخواست مجاز نیست.');
       else requireThat(/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host), 403, 'برای دسترسی از شبکه، APP_ORIGIN را تنظیم کنید.');
-      const path = new URL(req.url, allowedOrigin(req)).pathname;
+      const path = native ? '/api' + (url.pathname.slice('/api/v1'.length) || '/') : url.pathname;
       const method = req.method;
       if (!path.startsWith('/api/')) {
         requireThat(['GET', 'HEAD'].includes(method), 405, 'روش درخواست مجاز نیست.');
@@ -105,15 +102,21 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
         return;
       }
       const mutating = !['GET', 'HEAD'].includes(method);
-      if (mutating) {
+      if (native) {
+        requireThat(!req.headers.origin, 403, 'این مسیر برای برنامه‌های بومی است.');
+      } else if (mutating) {
         requireThat(req.headers['x-requested-with'] === 'TaskManager', 403, 'درخواست معتبر نیست.');
         requireThat(!req.headers.origin || req.headers.origin === allowedOrigin(req), 403, 'مبدا درخواست مجاز نیست.');
       }
-      const body = mutating ? await bodyOf(req) : null;
-      const raw = req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+      const hasBody = native ? ['POST', 'PATCH'].includes(method) : mutating;
+      const body = hasBody ? await bodyOf(req) : null;
+      const raw = native
+        ? req.headers.authorization?.match(/^Bearer (tm_[A-Za-z0-9_-]{43})$/i)?.[1]
+        : req.headers.cookie?.split(';').map(v => v.trim()).find(v => v.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1).match(/^[A-Za-z0-9_-]{43}$/)?.[0];
       const user = store.session(raw);
-      if (path === '/api/session' && method === 'GET') return json(200, { user: publicUser(user), csrf: user?.csrf, setupRequired: store.needsSetup(), canSetup: canSetup(req) });
-      if (['/api/setup', '/api/login'].includes(path) && method === 'POST') {
+      if (!native && path === '/api/session' && method === 'GET') return json(200, { user: publicUser(user), csrf: user?.csrf, setupRequired: store.needsSetup(), canSetup: canSetup(req) });
+      const loginPath = native ? path === '/api/session' : ['/api/setup', '/api/login'].includes(path);
+      if (loginPath && method === 'POST') {
         const setup = path === '/api/setup';
         if (setup) {
           requireThat(canSetup(req), 403, 'برای راه‌اندازی اولیه از دستور راه‌اندازی روی سرور استفاده کنید.');
@@ -131,14 +134,21 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
           requireThat(current?.active && current.password === candidate.password && valid, 401, 'نام کاربری یا رمز عبور نادرست است.');
           account = publicUser(current);
         }
-        const session = store.createSession(account.id);
+        const session = store.createSession(account.id, native);
         if (raw) store.logout(raw);
+        if (native) return json(200, { user: account, access_token: session.raw, token_type: 'Bearer', expires_at: session.expires });
         res.setHeader('Set-Cookie', cookie(session.raw));
         return json(200, { user: account, csrf: session.csrf });
       }
       requireThat(user, 401, 'برای ادامه وارد حساب خود شوید.');
-      if (mutating) requireThat(req.headers['x-csrf-token'] === user.csrf, 403, 'نشست تغییر کرده است. صفحه را تازه کنید.');
-      if (path === '/api/logout' && method === 'POST') {
+      if (native && path === '/api/session' && method === 'GET') return json(200, { user: publicUser(user) });
+      if (native && path === '/api/session' && method === 'DELETE') {
+        store.logout(raw);
+        res.writeHead(204);
+        return res.end();
+      }
+      if (!native && mutating) requireThat(req.headers['x-csrf-token'] === user.csrf, 403, 'نشست تغییر کرده است. صفحه را تازه کنید.');
+      if (!native && path === '/api/logout' && method === 'POST') {
         store.logout(raw); res.setHeader('Set-Cookie', cookie('', true)); return json(200, { ok: true });
       }
       if (path === '/api/password' && method === 'POST') {
@@ -150,7 +160,8 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
         requireThat(current?.id === user.id, 401, 'نشست پایان یافته است. دوباره وارد شوید.');
         requireThat(current.password === oldHash, 409, 'حساب تغییر کرده است. دوباره وارد شوید.');
         store.setPassword(user.id, hashed);
-        res.setHeader('Set-Cookie', cookie('', true)); return json(200, { ok: true });
+        if (!native) res.setHeader('Set-Cookie', cookie('', true));
+        return json(200, { ok: true });
       }
       if (path === '/api/users' && method === 'GET') return json(200, { users: store.users(user.admin), directory: store.db.prepare('SELECT id,name FROM users').all() });
       if (path === '/api/users' && method === 'POST') {
@@ -176,21 +187,20 @@ export function createApp({ dbPath = resolve(root, 'data/taskmanager.sqlite'), o
         store.setPassword(target.id, hashed);
         return json(200, { ok: true });
       }
-      if (path === '/api/tasks' && method === 'GET') return json(200, { tasks: store.listTasks(user) });
-      if (path === '/api/tasks' && method === 'POST') return json(201, store.createTask(user, taskInput(body)));
-      const match = path.match(/^\/api\/tasks\/([a-z0-9-]+)(\/actions)?$/);
-      if (match && method === 'GET' && !match[2]) return json(200, store.detail(match[1], user));
-      if (match && method === 'PATCH' && !match[2]) {
-        return json(200, store.updateTask(match[1], user, { ...taskInput(body), version: version(body.version) }));
-      }
-      if (match?.[2] && method === 'POST') {
-        return json(200, store.transition(match[1], user, { action: field(body.action, 'اقدام', 30), note: field(body.note ?? '', 'توضیح', 10000, 0), version: version(body.version) }));
+      const result = taskResponse(store, user, { path, method, body, query: url.searchParams, native });
+      if (result) {
+        const [status, value] = result;
+        if (native && status === 201) res.setHeader('Location', `/api/v1/tasks/${value.id}`);
+        return json(status, value);
       }
       throw new AppError(404, 'مسیر پیدا نشد.');
     } catch (error) {
       if (!(error instanceof AppError)) console.error('Request failed:', error.name, error.code || 'internal');
-      if (!res.headersSent) json(error.status || 500, { error: error instanceof AppError ? error.message : 'خطای داخلی سرور. دوباره تلاش کنید.' });
-      else res.end();
+      if (res.headersSent) return res.end();
+      const status = error instanceof AppError ? error.status : 500;
+      const message = error instanceof AppError ? error.message : 'خطای داخلی سرور. دوباره تلاش کنید.';
+      if (native && status === 401) res.setHeader('WWW-Authenticate', 'Bearer');
+      json(status, native ? { error: message, code: error instanceof AppError && error.code || errorCodes[status] } : { error: message });
     }
   });
   server.requestTimeout = 30000;
