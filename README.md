@@ -4,9 +4,10 @@ A standalone company task app with a Persian, right-to-left interface for phones
 Every task has a creator, an assignee and a separate reviewer. The assignee submits a result;
 the reviewer approves it or returns it with a reason. Each round stays in the task history.
 
-This folder is independent of the WildCat backend. It uses Node.js 24.13 or newer, the built-in
-SQLite database and plain browser JavaScript. Running the app does not require installing npm
-packages or building assets.
+Hamkar was built as part of a program to create software with AI in fewer than five prompts.
+
+Hamkar uses Node.js 24.13 or newer, the built-in SQLite database and plain browser JavaScript.
+Running the app does not require installing npm packages or building assets.
 
 ## Start on this computer
 
