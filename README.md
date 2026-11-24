@@ -4,9 +4,10 @@ A standalone company task app with a Persian, right-to-left interface for phones
 Every task has a creator, an assignee and a separate reviewer. The assignee submits a result;
 the reviewer approves it or returns it with a reason. Each round stays in the task history.
 
-همکار را در قالب برنامه‌ای برای ساخت نرم‌افزار با هوش مصنوعی در کمتر از پنج پرامپت ساختیم.
+Hamkar was built as part of a program to create software with AI in fewer than five prompts.
 
-در [فهرست پرامپت‌ها](prompts.md) می‌توانید درخواست‌های اولیه برای برنامه‌ریزی و پیاده‌سازی و درخواست‌های بعدی برای آزمایش، بهبود رابط کاربری و انتشار برنامه را بخوانید.
+The [prompt log](prompts.md) includes the original planning and implementation requests
+and later prompts for testing, improving the interface, and publishing the app.
 
 Hamkar uses Node.js 24.13 or newer, the built-in SQLite database and plain browser JavaScript.
 Running the app does not require installing npm packages or building assets.
