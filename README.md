@@ -6,6 +6,9 @@ the reviewer approves it or returns it with a reason. Each round stays in the ta
 
 Hamkar was built as part of a program to create software with AI in fewer than five prompts.
 
+The [prompt log](prompts.md) includes the original planning and implementation requests,
+plus later prompts for testing, UI changes, demos, and publishing.
+
 Hamkar uses Node.js 24.13 or newer, the built-in SQLite database and plain browser JavaScript.
 Running the app does not require installing npm packages or building assets.
 
